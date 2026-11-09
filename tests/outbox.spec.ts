@@ -3,7 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { OutboundMessage } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
+import { IM_WORDS } from '../src/infra/text.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
+import { wecomKind } from '../src/sources/wecom.ts'
+import { weixinKind } from '../src/sources/weixin.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
@@ -39,4 +42,33 @@ it('keeps a message for a Source that is not installed waiting, and sends it onc
   // A message whose Source was not installed is tried again after 5 seconds.
   await at(5000)
   expect([h.runtime.outbox.status('waiting'), sent.map(message => message.id)]).toEqual(['sent', ['waiting']])
+})
+
+it('refuses an over-limit reply before queueing it for each IM Source, so the agent can rewrite it instead of retrying forever', () => {
+  const text = Array.from({ length: IM_WORDS + 1 }, () => 'word').join(' ')
+  const refuse = <C extends Record<string, unknown>>(kind: SourceKind<C>) => {
+    h.runtime.sources.register(kind)
+    const message: OutboundMessage = { id: `too-long-${kind.kind}`,
+      channel: { source: kind.kind, thread: `${kind.kind}:chat-1`, address: { chatId: 'chat-1', peer: 'peer' } }, text, kind: 'reply' }
+    expect(() => h.runtime.outbox.send(message)).toThrow(`maximum is ${IM_WORDS}`)
+    // Nothing was recorded, so no receipt waits on a delivery that can never succeed.
+    expect(h.runtime.outbox.status(message.id)).toBeUndefined()
+  }
+  refuse(wecomKind); refuse(weixinKind)
+  expect(h.runtime.effects.pending('reply')).toBe(false)
+})
+
+it('drops a reply already queued before the queue-time check, instead of retrying an impossible delivery forever', async () => {
+  h.runtime.sources.register(wecomKind)
+  const text = Array.from({ length: IM_WORDS + 1 }, () => 'word').join(' ')
+  const message: OutboundMessage = { id: 'queued-too-long',
+    channel: { source: 'wecom', thread: 'wecom:chat-1', address: { chatId: 'chat-1' } }, text, kind: 'reply' }
+  // A receipt an earlier version persisted, as an upgrade finds it.
+  h.runtime.store.atomic(() => {
+    h.runtime.store.receipts.add(message)
+    h.runtime.effects.enqueue('reply', message.id, {})
+  })
+  await h.runtime.sendReplies()
+  expect(h.runtime.store.receipts.get(message.id)).toMatchObject({ status: 'dropped', dropped: { reason: 'messageInvalid' } })
+  expect(h.runtime.effects.pending('reply')).toBe(false)
 })

@@ -53,6 +53,20 @@ describe('account-isolated operations', () => {
     await send(commands, { ...reply, channel: githubChannel(8, `https://github.com/${REPOSITORY}/pull/8#discussion_r7`) })
     expect(gh.mock.calls[1]![0]).toEqual(['api', `repos/${REPOSITORY}/pulls/8/comments/3/replies`, '--method', 'POST', '-f', expect.stringContaining('Done')])
   })
+  it('runs glab against the configured instance and restricts calls to its projects', async () => {
+    const gitlab = testDeployment({ gitlab: { host: 'gitlab.example.com', cli: '/path/glab-agent', login: 'agent-bot', id: 7,
+      email: '7-agent-bot@users.noreply.gitlab.example.com', projects: ['acme/widgets'] } })
+    const commands = new Commands(() => gitlab, {}, new AbortController().signal)
+    const run = vi.spyOn(commands, 'run').mockResolvedValue('{}')
+    await commands.gitlabApi(z.unknown(), 'acme/widgets', 'issues?per_page=1')
+    expect(run).toHaveBeenCalledWith('/path/glab-agent', ['--hostname', 'gitlab.example.com', 'api', 'projects/acme%2Fwidgets/issues?per_page=1'])
+    await commands.gitlabApi('acme/widgets', 'issues/5/notes', '--method', 'POST', '-f', 'body=Done')
+    expect(run).toHaveBeenLastCalledWith('/path/glab-agent', ['--hostname', 'gitlab.example.com', 'api', 'projects/acme%2Fwidgets/issues/5/notes',
+      '--method', 'POST', '-f', 'body=Done'])
+    await expect(commands.gitlabApi('acme/other', 'issues')).rejects.toThrow('restricted to the configured projects')
+    await expect(commands.gitlabApi('acme/widgets', '../../projects/other')).rejects.toThrow('restricted to the configured projects')
+    await expect(new Commands(() => testDeployment(), {}, new AbortController().signal).glab(['api', 'user'])).rejects.toThrow('no working CLI')
+  })
   it('uses Feishu bot identity and one idempotency key on retries', async () => {
     const commands = new Commands(() => deployment, {}, new AbortController().signal); const run = vi.spyOn(commands,'run').mockResolvedValue('{"ok":true,"data":{}}')
     await send(commands, { ...reply, channel: feishuChannel('oc_1', 'om_1') })

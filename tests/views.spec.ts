@@ -98,6 +98,22 @@ it('classifies a Thread by what it is doing, and offers a filtered Trigger of a 
   expect(rows[0]!.actor.name).toEqual({ zh: 'Alice', en: 'Alice' })
 })
 
+it('names the senders a Decision judged once each, with the id its Source gave, and no automated Trigger', () => {
+  const host = views()
+  store.threads.save({ key: 'feishu:oc_1:om_root', ref: { source: 'feishu', id: 'oc_1:om_root' }, createdAt: at, subscriptions: [], correlated: [],
+    pending: [], meta: {} })
+  store.triggers.save(message('e1', { source: 'feishu', id: 'ou_alice' }))
+  store.triggers.save(message('e2', { source: 'feishu', id: 'ou_alice' }))
+  store.triggers.save(message('e3', { source: 'feishu', id: 'ou_bob' }))
+  store.triggers.save(message('e4', { source: 'feishu', id: '' }, false))
+  store.decisions.save({ id: 'd1', evalId: 'e', threadKey: 'feishu:oc_1:om_root', triggerIds: ['e1', 'e2', 'e3', 'e4'], policyVersion: 'v',
+    at, kind: 'ignore', reason: [{ code: 'not_a_member' }], strength: 'inferred' })
+  const decisions = threadDetail(host, 'feishu:oc_1:om_root', undefined, 50)!.decisions
+  expect(decisions[0]!.actors).toEqual([{ source: 'feishu', id: 'ou_alice', name: { zh: 'Alice', en: 'Alice' } },
+    { source: 'feishu', id: 'ou_bob', name: feishuKind.policy!.unnamed!.person }])
+  expect(decisions[0]!.preview).toBe('message e1 / message e2 / message e3 / message e4')
+})
+
 it('states each Source by the first state that holds', () => {
   const host = views()
   const states = (setup: Parameters<typeof sourcesStatus>[2], health: Parameters<typeof sourcesStatus>[1] = {}) =>
@@ -201,7 +217,8 @@ it('words each settings save by what it changed from the one before, and nothing
   const alice = { id: 'ou_alice', name: 'Alice Liu' }, bob = { id: 'ou_bob', name: 'Bob' }
   store.saveSettings({ ...first, policy: allowed([alice, bob, { id: 'ou_carol' }]), paused: true,
     sources: { ...first.sources, feishu: { enabled: false, config: {} } },
-    executor: { ...first.executor, directory: '/srv/work', prepare: 'npm ci', blockedCommands: ['rm', 'curl'] } })
+    executor: { ...first.executor, repository: 'acme/widgets', baseBranch: 'dev', directory: '/srv/work', prepare: 'npm ci',
+      blockedCommands: ['rm', 'curl'] } })
   const second = store.settings()
   store.saveSettings({ ...second, policy: allowed([alice, { id: 'ou_carol' }]), paused: false, sources: { ...second.sources,
     feishu: { enabled: true, config: {} } } })
@@ -210,7 +227,8 @@ it('words each settings save by what it changed from the one before, and nothing
   expect(changes(revision - 1)).toEqual([
     { code: 'sourceRowsAdded', source: 'feishu', part: true, field: 'allowed', items: ['Bob', 'ou_carol'] },
     { code: 'sourceRowsChanged', source: 'feishu', part: true, field: 'allowed', items: ['Alice Liu'] },
-    { code: 'paused' }, { code: 'executionDirectory', from: '', to: '/srv/work' }, { code: 'prepareCommand' },
+    { code: 'repository', from: '', to: 'acme/widgets' }, { code: 'baseBranch', from: '', to: 'dev' }, { code: 'paused' },
+    { code: 'executionDirectory', from: '', to: '/srv/work' }, { code: 'prepareCommand' },
     { code: 'blockedCommands', from: '', to: 'rm curl' }, { code: 'sourceDisabled', source: 'feishu' }])
   expect(changes(revision)).toEqual([{ code: 'sourceRowsRemoved', source: 'feishu', part: true, field: 'allowed', items: ['Bob'] },
     { code: 'resumed' }, { code: 'sourceEnabled', source: 'feishu' }])

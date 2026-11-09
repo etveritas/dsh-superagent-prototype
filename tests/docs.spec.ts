@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const NUMBERED = /^(\d{3})-[a-z0-9-]+\.md$/
 const numbered = readdirSync(join(ROOT, 'docs')).filter(name => NUMBERED.test(name)).sort()
-const entries = ['README.md', 'SETUP.md']
+const entries = ['README.md', 'README.zh-CN.md', 'SETUP.md']
 const documents = [...entries, ...readdirSync(join(ROOT, 'docs')).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]
 const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8')
 function links(file: string): string[] {

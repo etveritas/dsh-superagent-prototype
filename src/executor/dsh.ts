@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
@@ -77,6 +78,8 @@ export interface ExecutorHost {
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
+  /** Reads the images a Trigger's message carries for the worker Session being started or addressed, empty when there are none or they are unreadable. */
+  images(trigger: Trigger): Promise<readonly ImageAttachmentRef[]>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
 }
@@ -339,7 +342,10 @@ export class DshExecutor implements Executor {
     const message = inputMessage(input, trigger)
     if (message === undefined) return
     const text = message.length > ASSIGNMENT_CHARS ? JSON.stringify(capped(message, ASSIGNMENT_CHARS, inputResource(ticket.id, input.id))) : message
-    await this.host.sessions.prompt(workerSessionId(ticket.id), input.id, text, 'steer', live)
+    const source = input.kind === 'trigger' ? this.host.store.triggers.get(input.triggerId) : undefined
+    const images = source ? await this.host.images(source) : []
+    live()
+    await this.host.sessions.prompt(workerSessionId(ticket.id), input.id, images.length ? { text, images } : text, 'steer', live)
   }
   /** Formats a trigger on `ticket` for the worker, including a preview of the replied-to message when the worker has not yet seen it. */
   private async triggerCard(ticket: Ticket, triggerId: string, note?: string): Promise<object | undefined> {
@@ -463,7 +469,10 @@ export class DshExecutor implements Executor {
         ...(read ? { assignment_chars: chars, assignment_read: read } : {}), ...(card ? { trigger: card } : {}),
         ...(batch.length ? { batch } : {}), ...retried })
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
-    await this.host.sessions.prompt(sessionId, requestId, text, 'queue',
+    // The worker sees the person's images beside the source Trigger; a worker that already received it gets none twice.
+    const images = source && !told ? await this.host.images(source) : []
+    if (!current()) return
+    await this.host.sessions.prompt(sessionId, requestId, images.length ? { text, images } : text, 'queue',
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)

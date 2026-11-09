@@ -99,3 +99,15 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   vi.mocked(Setup.prototype.configured).mockRestore()
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+
+it('keeps the Executor default repository and base branch in the panel-only execution environment', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const executor = store.settings().executor
+  const revision = store.blockRevision('executor')
+  await expect(settings.save('executor', { ...executor, repository: 'acme/widgets', baseBranch: 'dev' }, revision, 'tool'))
+    .rejects.toThrow(UserError)
+  await expect(settings.save('executor', { ...executor, repository: 'acme/widgets', baseBranch: 'dev' }, revision, 'panel'))
+    .resolves.toMatchObject({ saved: true })
+  expect(store.settings().executor).toMatchObject({ repository: 'acme/widgets', baseBranch: 'dev' })
+})

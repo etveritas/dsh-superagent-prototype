@@ -63,14 +63,19 @@ def ps(*options, check=False):
             yield int(parts[0]), parts[1], parts[2].split()
 
 
+def service_command(name, args):
+    return name in ('node', 'dsh') or (name == 'MainThread' and Path(args[0]).name == 'node'
+                                      and len(args) > 1 and args[1].endswith('/dsh/lib/bin.js'))
+
+
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and service_command(name, args) and serves(args, profile) for found, name, args in ps('-p', str(pid)))
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, name, args in ps('-ax', check=True) if service_command(name, args) and serves(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):
@@ -90,7 +95,8 @@ def state(url):
         entries = {name: entry if isinstance(entry, dict) else {} for name, entry in health.items()}
         return {'health': {name: entry.get('state') for name, entry in entries.items()},
                 'errors': {name: str(entry.get('detail', '')) for name, entry in entries.items() if entry.get('state') == 'error'},
-                'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem')}
+                'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem'),
+                'gitlab': setup.get('gitlabProblem')}
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -125,7 +131,7 @@ def status(args):
     print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
-                      'feishu': current and current['feishu']}, ensure_ascii=False, indent=2))
+                      'feishu': current and current['feishu'], 'gitlab': current and current['gitlab']}, ensure_ascii=False, indent=2))
     return outcome(pids, current)
 
 

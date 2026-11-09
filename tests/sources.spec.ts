@@ -1023,7 +1023,7 @@ it('reports GitHub as failing only after the configured number of consecutive fa
   expect(pollFailure(1, 3, eof)).toBeUndefined()
   expect(pollFailure(2, 3, eof)).toBeUndefined()
   expect(pollFailure(3, 3, eof)).toEqual({ state: 'error', detail: '3 consecutive failed polls; last: Error: Get "https://api.github.com/x": EOF', code: 'pollFailures', values: { count: '3', error: 'Error: Get "https://api.github.com/x": EOF' } })
-  expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
+  expect(githubKind.schema.parse({})).toEqual({ repository: '', cli: '', baseBranch: '', pollSeconds: 60, failuresBeforeError: 3, observeIssues: false,
     observePulls: false, observeComments: false, observeCi: false })
 })
 describe('feishu event consumer', () => {
@@ -1041,9 +1041,10 @@ describe('feishu event consumer', () => {
   })
   /**
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
-   * and `flaky` exits after its first ready. It records each run and the PID of the latest.
+   * `flaky` exits after its first ready, and `early` prints its events before its ready line. It records each run and
+   * the PID of the latest.
    */
-  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
+  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late' | 'early'): string {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
@@ -1055,6 +1056,7 @@ describe('feishu event consumer', () => {
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
     late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
+    early) cat '${dir}/events'; echo '[event] ready' >&2; touch '${dir}/printed'; exec sleep 60 ;;
   esac
   `, { mode: 0o755 })
     return path
@@ -1094,6 +1096,19 @@ describe('feishu event consumer', () => {
     await vi.waitFor(() => expect(store.triggers.get(feishuTriggerId('om_3'))).toBeDefined(), until)
     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTriggerId(id))?.meta.direct)).toEqual([false, true])
     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
+    expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
+    controller.abort(); await running; store.close()
+  }, 20_000)
+  it('keeps the error a malformed line reports when the ready line is read after it', async () => {
+    writeFileSync(join(dir, 'events'), event('om_1', 'oc_group', 'group') + '\nnot json\n')
+    const { ctx, health, store } = consumerSource(cli('early'))
+    running = runFeishu(ctx, controller.signal)
+    // The CLI prints `[event] ready` before its events, but stdout and stderr reach the consumer unordered: the ready
+    // line read after an event error must not report the consumer as ready again.
+    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') }), until)
+    await vi.waitFor(() => expect(existsSync(join(dir, 'printed'))).toBe(true), until)
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(store.triggers.get(feishuTriggerId('om_1'))).toBeDefined()
     expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
     controller.abort(); await running; store.close()
   }, 20_000)

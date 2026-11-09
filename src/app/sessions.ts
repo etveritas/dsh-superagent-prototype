@@ -4,12 +4,14 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { WORKER_SHELL } from '../infra/environment.ts'
 import type { HealthEntry } from '../infra/health.ts'
-import { AgentDelivery, messageId } from './delivery.ts'
+import { AgentDelivery, messageId, type DeliveryContent } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { RetryHealth } from './retry-health.ts'
@@ -46,6 +48,13 @@ interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: 
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+/**
+ * DSH's managed `DSH_*` shell environment registry (`ctx.shellEnv`), which the shell tools require and `Sessions` adds one
+ * fact to. It is read through a service lookup so the bundle needs no dependency on the package that provides it.
+ */
+interface ShellEnvironments {
+  register(contributor: { name: string; variables: Record<string, { description: string }>; resolve(execution: ToolExecution): Record<string, string> }): () => void
+}
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** DSH's agent preset registry selected `agentPreset` for a Session. */
@@ -133,15 +142,39 @@ export class Sessions {
     ctx.on('agent/status', ({ agent, status }) => {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
+    // Mark the shells of Executor Sessions and their subagents, the only shells whose git keeps the deployment's agent
+    // configuration; the `git` shim in `worker-bin` gives every other shell the operator's own configuration back.
+    ctx.inject(['shellEnv'], child => {
+      const shellEnv = child.get('shellEnv') as ShellEnvironments | undefined
+      if (!shellEnv) return
+      child.effect(() => shellEnv.register({
+        name: 'dsh-superagent',
+        variables: { [WORKER_SHELL]: { description: 'Set in an Executor Session\'s shell, whose git uses the deployment\'s agent configuration.' } },
+        resolve: (execution: ToolExecution): Record<string, string> => execution.agent && this.workerSession(execution.agent) ? { [WORKER_SHELL]: '1' } : {},
+      }))
+    })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
+  /** Whether `agent` is an Executor Session or a subagent of one, whose shells run the deployment's agent git configuration. */
+  private workerSession(agent: Agent): boolean {
+    let current: Agent | undefined = agent
+    // A subagent's parent may be another subagent; the worker, a `worker-` Session, is a few levels up.
+    for (let depth = 0; current !== undefined && depth < 9; depth++) {
+      if (ticketOfSession(current.id) !== undefined) return true
+      const parent: SessionId | undefined = current.session.header.parentSession
+      current = parent === undefined ? undefined : this.ctx.agents.get(parent)
+    }
+    return false
+  }
+  /** Resolves or creates session `id` in directory `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
-      const workspace = await ctx.workspaceRegistry.create(cwd)
+      // Only the main Session anchors a Workspace, at the state directory. An Executor Session takes its ticket
+      // directory as its cwd directly, so one Ticket's temporary directory never becomes a Workspace in the person's list.
+      const workspace = role === 'orchestrator' ? await ctx.workspaceRegistry.create(cwd) : undefined
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
-      await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
+      await ctx.sessionController.create({ sessionId: id as SessionId, ...(workspace ? { workspaceId: workspace.id } : { cwd }),
         agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
@@ -159,11 +192,11 @@ export class Sessions {
     return !('error' in result) && await this.agentDelivery.holds(result.agent, key(requestId))
   }
   /** Deliver a message once per request id: to the next turn, the current one, or `inject`ed with its label without waking the agent. */
-  async prompt(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, authorize?: () => void,
-    accepted?: () => void): Promise<void> {
+  async prompt(sessionId: string, requestId: string, content: string | DeliveryContent, mode: 'queue' | 'steer' | { inject: string },
+    authorize?: () => void, accepted?: () => void): Promise<void> {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
-    await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted)
+    await this.agentDelivery.send(result.agent, key(requestId), content, mode, this.host.lifetime, authorize, accepted)
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
   promptedId(requestId: string): MessageId { return messageId(key(requestId)) }
@@ -317,7 +350,7 @@ export class Sessions {
     previous?.dispose()
     const disposers: (() => void)[] = []
     for (const [name, content] of this.host.prompts.skills(version.config)) {
-      const bundled = name === 'feishu' || name === 'github' ? bundledSkills[name] : undefined
+      const bundled = name === 'feishu' || name === 'github' || name === 'wecom' ? bundledSkills[name] : undefined
       const body = version.config.skills[name] ?? ''
       const description = bundled?.description ?? (body.replace(/\s+/g, ' ').slice(0, 120) || 'Custom dsh-superagent operational skill.')
       disposers.push(scope.skills.register({ name: `${SKILL_PREFIX}${name}`, description, content, source: 'runtime',

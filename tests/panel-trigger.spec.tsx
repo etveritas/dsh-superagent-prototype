@@ -4,7 +4,7 @@ import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, click, text, at } from './fixtures/panel.tsx'
-import { server, trigger, threadSummary, ticketSummary } from './fixtures/panel-server.ts'
+import { server, acceptDecision, actor, MEMBER, trigger, threadSummary, ticketSummary } from './fixtures/panel-server.ts'
 
 usePanel()
 it('walks a Thread timeline newest first with dispositions as tags and its Decisions, requeues a filtered Trigger, pages backwards and returns', async () => {
@@ -27,6 +27,20 @@ it('walks a Thread timeline newest first with dispositions as tags and its Decis
   expect(find(zh['threadFilter.subscribed'], '.dt-pill').getAttribute('aria-pressed')).toBe('true')
 })
 
+it('names the sender of a Trigger and of the Decision that judged it by the id its Source gives, listed or not', async () => {
+  server.threadPages = () => ({ ...threadSummary(), tickets: [], correlated: [], context: [], url: undefined, earlier: null,
+    timeline: [trigger('e4', '2026-09-23T00:01:00Z', { disposition: { filtered: { code: 'not_a_member' } } })],
+    decisions: [{ ...acceptDecision(), id: 'd4', kind: 'ignore', outcome: 'ignore', reason: [{ code: 'not_a_member' }],
+      triggerIds: ['e4'], actors: [actor('feishu', 'ou_guest')], preview: '你是谁', threadTitle: '你是谁' }] })
+  at({ page: 'trigger', id: 'feishu:oc_1:om_root' })
+  await mount()
+  // The timeline names the sender as the Policy lists it, then the id to check it against that list.
+  expect(document.querySelector('.dt-event-actor')?.textContent).toBe(`Alice${MEMBER}`)
+  await click('这个线程的决定 · 1')
+  // A sender the Policy does not list keeps the kind's label, with the id to add to the list.
+  expect(document.querySelector('.dt-row-quote')?.textContent).toBe('飞书用户ou_guest：你是谁')
+})
+
 it('offers to send a person\'s message that reached a ticket to Eval, for one its worker neither did nor handed back', async () => {
   await mount()
   await click(zh['tab.trigger'])
@@ -47,6 +61,15 @@ it('filters the Thread list by activity, and unsubscribes from a Thread page aft
   await click(zh.unsubscribe)
   await click(zh.confirm)
   expect(server.requests.some(request => request.path === 'threads/feishu:oc_1:om_root/unsubscribe')).toBe(true)
+})
+
+it('unsubscribes one Ticket from a Thread page after confirmation', async () => {
+  await mount()
+  await click(zh['tab.trigger'])
+  await click('这个文案好奇怪')
+  await click(zh.unsubscribeTicket)
+  await click(zh.confirm)
+  expect(server.requests.some(request => request.path === 'threads/feishu:oc_1:om_root/unsubscribe?ticket_id=t1')).toBe(true)
 })
 
 it('folds consecutive automated messages from one sender on a Thread, showing the newest with its text', async () => {

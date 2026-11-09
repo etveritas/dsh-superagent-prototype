@@ -1,7 +1,6 @@
 /** Reliable outbound message delivery backed by persistent receipts and retried reply effects. */
 import type { OutboundMessage, Outbox as OutboxPort, ReplyStatus } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
-import { checkedImText } from '../infra/text.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.ts'
 import type { Store } from './store.ts'
@@ -9,7 +8,7 @@ import type { Store } from './store.ts'
 export interface OutboxHost {
   readonly store: Pick<Store, 'atomic' | 'receipts'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
-  readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
+  readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send' | 'check'>
   readonly commands: Commands
   paused(): boolean
 }
@@ -25,8 +24,10 @@ export class Outbox implements OutboxPort {
   }
   /** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
   send(message: OutboundMessage): void {
-    // Validate IM reply length here; acknowledgements are already validated when decided.
-    if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
+    // Refuse a reply its Channel can never accept as written, such as one over the IM word limit, before recording it:
+    // otherwise the agent that wrote it never learns why, and the delivery retries forever. Acknowledgements are
+    // already validated when decided.
+    if (message.kind === 'reply') this.host.sources.check(message)
     const { store, effects } = this.host
     store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
   }
@@ -44,6 +45,8 @@ export class Outbox implements OutboxPort {
     // Hold later messages for the same ticket and conversation behind an earlier pending message until it exceeds the failure threshold.
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
     if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }
+    // A message its Channel can never accept as written (such as text over the IM word limit) cannot be fixed by retrying.
+    try { sources.check(receipt) } catch { store.receipts.settle(receipt, 'messageInvalid'); return }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
     const result = await sources.send(receipt, commands)
     if (result === 'waiting') throw new Later('The Source is not installed')

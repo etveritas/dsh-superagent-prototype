@@ -1,5 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { expect, it, vi } from 'vitest'
@@ -30,8 +31,17 @@ function fixture(history: UserMessage[] = []) {
     inbox.nextStep.splice(0); inbox.nextTurn.splice(0)
     ctx.emit('session/event', agent.session, event(message))
   }
-  return { agent, agents, inbox, steer, followup, injected, open, read, close, flush, send, inject, holds, consume, signal }
+  return { agent, agents, inbox, steer, followup, injected, open, read, close, flush, send, inject, holds, consume, signal, delivery }
 }
+
+it('delivers the sender\'s images beside the relayed text as attachment blocks', async () => {
+  const f = fixture()
+  const image = { attachmentId: 'attachment-1', mediaType: 'image/png', bytes: 4, width: 1, height: 1 } as unknown as ImageAttachmentRef
+  await f.delivery.send(f.agent, 'candidate', { text: '{"kind":"candidate"}', images: [image] }, 'steer', f.signal.signal)
+  expect(f.steer).toHaveBeenCalledOnce()
+  expect(f.steer.mock.calls[0]![0].content).toEqual([{ type: 'text', text: '{"kind":"candidate"}' },
+    { type: 'image', attachment: image }])
+})
 
 it.each(['queue', 'steer'] as const)('delivers %s as an orchestrator relay, deduplicating pending and consumed messages', async mode => {
   const f = fixture()

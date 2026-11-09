@@ -1,6 +1,7 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -47,6 +48,8 @@ import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 
+/** How long one image read may take before the message that carries it is delivered without it. */
+const IMAGE_READ_TIMEOUT_MS = 30_000
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
@@ -100,7 +103,10 @@ export class Runtime extends Service implements SourceHost {
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const feishu = () => setup.configured() && !!setup.deployment.feishu
-      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
+      const wecom = () => setup.configured() && !!setup.deployment.wecom
+      const gitlab = () => setup.configured() && !!setup.deployment.gitlab
+      const pingcode = () => setup.configured() && !!setup.deployment.pingcode
+      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu, gitlab, pingcode, wecom)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
       store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
@@ -113,6 +119,28 @@ export class Runtime extends Service implements SourceHost {
         return () => {}
       })
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
+      /**
+       * Reads the images a Trigger's message carries with the main Session, which is the Session they are delivered to.
+       * A read that fails (an expired WeCom link, a model without image input) leaves that image out; the card still arrives.
+       */
+      const triggerImages = async (trigger: Trigger): Promise<readonly ImageAttachmentRef[]> => {
+        const context = sources.threadContext(trigger)
+        const keys = context?.images(trigger.text) ?? []
+        if (!context || !keys.length) return []
+        const resolved = await ctx.sessionController.resolveAgent(masterId as SessionId)
+        if ('error' in resolved) return []
+        const message = { id: context.messageId, text: trigger.text }
+        const images: ImageAttachmentRef[] = []
+        for (const key of keys) {
+          try {
+            const signal = AbortSignal.any([this.lifetime, AbortSignal.timeout(IMAGE_READ_TIMEOUT_MS)])
+            const read = await context.image(resolved.agent, commands, message, key, machine.stateDir, signal)
+            const image = (read as { image?: ImageAttachmentRef } | undefined)?.image
+            if (image) images.push(image)
+          } catch { /* The card is still worth delivering without this image. */ }
+        }
+        return images
+      }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
@@ -127,15 +155,17 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
-        repliedTo: trigger => repliedTo({ store, sources }, trigger) })
+        images: triggerImages, repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
-        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+        deliver: (id, content) => sessions.prompt(masterId, id, content, 'steer'), images: triggerImages,
+        candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
-        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
+        outbox, chatThread: key => sources.isChatThread(key),
+        prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)
@@ -158,7 +188,9 @@ export class Runtime extends Service implements SourceHost {
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
-        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
+        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
+        get gitlabProblem() { return setup.gitlabProblem }, get pingcodeProblem() { return setup.pingcodeProblem },
+        receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
@@ -180,9 +212,13 @@ export class Runtime extends Service implements SourceHost {
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
   /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
+  /** Why the GitLab account is unavailable even though the GitLab Source configures a CLI. */
+  get gitlabProblem(): SetupProblem | undefined { return this.setup.gitlabProblem }
+  /** Why the PingCode skill is unavailable even though the PingCode Source configures projects. */
+  get pingcodeProblem(): SetupProblem | undefined { return this.setup.pingcodeProblem }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
-    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
+    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}), ...(resolved.gitlab ? { gitlab: resolved.gitlab } : {}) } : {}
     return channel => this.sources.link(channel, links)
   }
   ticketEnvironment(ticket: Ticket): Variable[] {
@@ -222,6 +258,7 @@ export class Runtime extends Service implements SourceHost {
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
+      get gitlabProblem() { return setup.gitlabProblem }, get pingcodeProblem() { return setup.pingcodeProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }

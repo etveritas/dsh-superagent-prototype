@@ -24,6 +24,8 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
 
+The Executor Session works in its ticket directory as its cwd and is not registered as a DeepSeek Harness Workspace. Only the main Session has a Workspace, at the state directory, so a person's Workspace list holds their own projects and that one entry rather than one per Ticket.
+
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
@@ -50,7 +52,7 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory.
 
-A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
+A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. It should check out `DSH_SUPERAGENT_WORK_REF`: the head of the pull or merge request that started the Ticket, otherwise `refs/heads/<base branch>` from its Source or the Executor's default base branch. That variable is empty when neither a head nor a base branch is configured, and the command should fail rather than check out the remote's default branch. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
 ### Concurrency
 
@@ -67,11 +69,17 @@ The prepare command and Executor instructions receive the same execution variabl
 | Variable | Registered by | Value |
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
+| `DSH_SUPERAGENT_REPOSITORY`, `DSH_SUPERAGENT_WORK_REF` | Executor | The repository or project of the Ticket, and the ref to check out: a Source's pull or merge request head, or a base branch |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
 | `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
+| `DSH_SUPERAGENT_GITHUB_BASE_BRANCH` | GitHub | The base branch for Tickets that did not start on a pull request; empty when it is not configured |
+| `DSH_SUPERAGENT_GITLAB_PROJECT`, `DSH_SUPERAGENT_GITLAB_MR_HEAD` | GitLab | The project and the merge request head that started the Ticket |
+| `DSH_SUPERAGENT_GITLAB_BASE_BRANCH` | GitLab | The project's base branch for Tickets that did not start on a merge request; empty when it is not configured |
 | `DSH_SUPERAGENT_FEISHU_BOT`, `DSH_SUPERAGENT_FEISHU_CHAT` | Feishu | The bot, and the chat that started the Ticket |
+
+The Source that started the Ticket answers `DSH_SUPERAGENT_REPOSITORY` and `DSH_SUPERAGENT_WORK_REF` as a group; a Ticket from a Source that names no repository takes the first repository Source that does. A role the chosen Source leaves empty becomes the Executor's default repository or base branch, never another Source's value, and an unset work ref stays empty. A Source marks the variables that feed these two with a `role`.
 
 Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
@@ -92,12 +100,12 @@ Reviews without a body, such as approvals, also arrive as Triggers and can wake 
 ## How a Ticket ends
 
 - **Ready without a pull request:** a `ready` Report ends the Ticket as completed.
-- **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
+- **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on one of its Threads resumes it, under the rules below.
 ### Pull requests
 
 A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.
 
-The Ticket is done when none of the pull requests it opened remain open. If it opened none, all pull requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions, allowing a later human comment to resume it.
+The Ticket is done when none of the pull requests it opened remain open. If it opened none, all pull requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions to the Threads it follows, except a chat Thread another Ticket still follows (see below), allowing a later human comment there to resume it.
 
 A close does not end the Ticket while resumed, retried or recovered work is unfinished. It also waits if the Executor acknowledged or answered a follow-up it owns but has not since made a non-progress Report or ended a turn after reading that message. A later `ready` Report ends the Ticket once the same pull-request completion rule is satisfied.
 
@@ -113,7 +121,11 @@ An Input counts as read after the Session takes it into a step and subsequently 
 
 Threads followed only for context still deliver messages, but do not give the Ticket ownership of human follow-ups or resume ended Tickets. Those messages can be assessed independently.
 
-Sources poll subscribed Threads while a live Ticket subscribes, and for two weeks after the later of the last Trigger and the subscribing Tickets' end. Afterwards, messages arrive only through ordinary intake: GitHub notifications or Feishu live events.
+### Chat Threads
+
+A chat Thread follows its live Tickets and at most one ended Ticket, so a busy conversation cannot accumulate Tickets that all resume on its next message (`SourceKind.chat`). When a Ticket ends, it drops its own Subscription to a chat Thread that another Ticket still follows. When a Ticket subscribes to a chat Thread, the Thread drops its ended Tickets' Subscriptions. A Ticket that ended alone therefore keeps its Thread for a later follow-up; one that ended while another Ticket followed the same Thread does not. Subscriptions to other Threads, such as a pull request's, stay as they were.
+
+Sources poll subscribed Threads while a live Ticket subscribes, and for two weeks after the later of the last Trigger and the subscribing Tickets' end. A chat Thread stops being polled once its last Subscription is dropped, so after that its messages arrive only through ordinary intake: GitHub notifications or Feishu live events.
 
 ## Failure and recovery
 
@@ -124,6 +136,8 @@ When an Executor Session reports `blocked` or `failed`, or fails to start or err
 A passing failure of the model provider or the network, an HTTP 408, 429 or 5xx or a refused, reset or timed-out connection, is tried again first, three times with a growing backoff: a launch runs again, and a worker whose turn failed is told to go on; a failed prepare command is not tried again.
 
 Once failed, CI and bot messages are recorded on it, but they are not delivered and do not wake the Session.
+
+The main Session can send one failure notice to the conversation the Ticket started in, naming what failed and what happens next: one notice covers one failed report, so a retry that fails again is a new notice. A failed report that asks a question goes through attention instead, and progress or a `blocked` report without a question stays internal.
 
 Its tools stay available, so a person can continue in the Session directly.
 

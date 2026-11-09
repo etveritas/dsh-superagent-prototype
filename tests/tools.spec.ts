@@ -263,14 +263,14 @@ it('checks an acknowledgement against the IM word limit, not a character count',
   expect(await accept(words(IM_WORDS))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
 })
 
-it('saves a settings block by name, a Source\'s block with the Source\'s id', async () => {
+it('saves settings and prevents the Agent from disabling GitHub setup', async () => {
   const save = (args: Record<string, unknown>) => h.runTool(h.runtime.masterId, 'orchestrator_settings_save', args)
   const github = { config: h.runtime.store.settings().sources.github!.config, revision: h.runtime.store.blockRevision('source:github') }
   const off = { enabled: false, config: github.config }
   await expect(save({ block: 'source', value: off, revision: github.revision })).rejects.toThrow('source names the Source')
   await expect(save({ block: 'source:github', value: off, revision: github.revision })).rejects.toThrow()
-  expect(await save({ block: 'source', source: 'github', value: off, revision: github.revision })).toMatchObject({ saved: true })
-  expect(h.runtime.store.settings().sources.github?.enabled).toBe(false)
+  await expect(save({ block: 'source', source: 'github', value: off, revision: github.revision })).rejects.toThrow('management panel')
+  expect(h.runtime.store.settings().sources.github?.enabled).toBe(true)
   expect(await save({ block: 'pause', value: { paused: true }, revision: 0 })).toEqual({ paused: true })
 })
 
@@ -384,13 +384,15 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   const b = (await h.route({ kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' })).ticket as
     { ticket_id: string }
   h.runtime.engine.stopTicket(b.ticket_id)
+  // Its end drops its chat subscription, so only the live ticket remains on the thread.
+  expect(h.runtime.store.threads.get(`feishu:${CHAT}:om_1`)!.subscriptions).toEqual([a.id])
   // A follow-up reaches the live ticket without an Eval; handed back, its candidate shows where it went.
   const more = feishu('3', '@bot 还有按钮', { root_id: 'om_1' })
   h.runtime.receive(more); await h.runtime.idle()
   await handBack(more.id)
   const followup = relaysOf('candidate').at(-1)!
-  expect((followup.related_tickets as { ticket_id: string }[]).map(card => card.ticket_id)).toEqual([a.id, b.ticket_id])
-  expect(followup).toMatchObject({ tickets_total: 2, delivered_to: [a.id], thread: `feishu:${CHAT}:om_1` })
+  expect((followup.related_tickets as { ticket_id: string }[]).map(card => card.ticket_id)).toEqual([a.id])
+  expect(followup).toMatchObject({ tickets_total: 1, delivered_to: [a.id], thread: `feishu:${CHAT}:om_1` })
   expect(String(followup.next_action).length).toBeLessThanOrEqual(100)
   // A message elsewhere that names a pull request reads the tickets that follow it.
   const thread = { key: 'github:123', ref: { source: 'github', id: '123' }, createdAt: '', subscriptions: [a.id], correlated: [], pending: [], meta: {} }
@@ -435,6 +437,17 @@ it('tells the main Session of the settings, prompts, requeues and unsubscription
   expect(await h.runTool(h.runtime.masterId, 'orchestrator_thread_unsubscribe', { thread: `feishu:${CHAT}:om_1` })).toEqual({ removed: true, thread: `feishu:${CHAT}:om_1` })
   await h.runtime.idle()
   expect(notices().slice(before).filter(notice => !('ticket_ended' in notice))).toEqual([])
+})
+
+it('unsubscribes only the named ticket from a thread, leaving its other tickets', async () => {
+  const first = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  const second = await h.acceptedTicket(feishu('2', '@bot 再修一个'))
+  const thread = `feishu:${CHAT}:om_1`
+  h.runtime.engine.bindThread(second.ticket.id, { source: 'feishu', id: `${CHAT}:om_1` }, false)
+  expect(h.runtime.store.threads.get(thread)!.subscriptions).toEqual([first.ticket.id, second.ticket.id])
+  expect(await h.runTool(h.runtime.masterId, 'orchestrator_thread_unsubscribe', { thread, ticket_id: first.ticket.id }))
+    .toEqual({ removed: true, thread, ticket_id: first.ticket.id })
+  expect(h.runtime.store.threads.get(thread)!.subscriptions).toEqual([second.ticket.id])
 })
 
 it('answers a policy sync with the counts and what changed, not the whole list', async () => {

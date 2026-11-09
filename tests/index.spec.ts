@@ -13,7 +13,7 @@ vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
 /** Simulate the Cordis loader updating a volatile configuration reference in place. */
 const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
 
-function context() {
+function context(profile?: unknown) {
   const handlers = new Map<string, () => void>()
   const configure = vi.fn(() => () => {})
   const describe = vi.fn(() => [])
@@ -22,7 +22,7 @@ function context() {
     inject: vi.fn((_services: string[], callback: (child: unknown) => void) => { callback({ effect: (effect: () => unknown) => effect(), settings: { configure } }) }),
     effect: vi.fn(),
     fiber: { restart: vi.fn(async () => {}) },
-    get: vi.fn((name: string) => name === 'settings' ? { describe } : undefined),
+    get: vi.fn((name: string) => name === 'settings' ? { describe } : name === 'profileContext' ? profile : undefined),
     logger: { info: vi.fn(), error: vi.fn() },
   }
   return { ctx, handlers, configure, describe }
@@ -39,6 +39,12 @@ it('reads a limit DSH commits a new value of without a restart, and asks DSH to 
   expect(machine.promptMaxChars.get()).toBe(8000)
   expect(handlers.has('loader/volatile-update')).toBe(false)
   expect(ctx.fiber.restart).not.toHaveBeenCalled()
+})
+
+it('defaults the state directory to state/superagent under the harness home a profile names', async () => {
+  const { ctx } = context({ name: 'desktop', dir: '/dsh/profiles/desktop', home: '/dsh' })
+  await apply(ctx as never, Config({}))
+  expect(runtimes.at(-1)!.machine.stateDir).toBe('/dsh/state/superagent')
 })
 
 it('asks DSH to read its settings entry again once a restart it started finished', async () => {

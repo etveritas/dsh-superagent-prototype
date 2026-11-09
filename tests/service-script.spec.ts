@@ -66,6 +66,12 @@ async function answering(state: unknown = READY, always = false): Promise<string
 const status = async (profile: string, url = 'http://127.0.0.1:9') =>
   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as { pids: number[]; manually_stopped: boolean }
 
+it('recognizes the Node service when Linux reports its thread name', async () => {
+  const pid = sleeper()
+  processes(`${pid} MainThread /opt/node/bin/node /opt/dsh/lib/bin.js --profile superagent --no-open`)
+  expect(await status('superagent')).toMatchObject({ pids: [pid] })
+})
+
 it('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
   processes(service(sleeper()), `${sleeper()} node node /opt/dsh --profile=superagent`)
   expect(await run('stop')).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes found') })

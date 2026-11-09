@@ -21,7 +21,12 @@ export type FieldSpec =
   | FieldBase & { type: 'fact'; settings?: 'deployment' }
   | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 
-export interface VariableSpec { key: string; description: Localized }
+/**
+ * A Source's or the Executor's execution variable. `role` marks the variables the Executor combines into the
+ * Ticket-wide `DSH_SUPERAGENT_REPOSITORY` and `DSH_SUPERAGENT_WORK_REF`: the starting repository, the head ref of the
+ * pull or merge request that started the Ticket, or the base branch for Tickets that started without one.
+ */
+export interface VariableSpec { key: string; description: Localized; role?: 'repository' | 'head' | 'base' }
 export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger }
 export interface AdmissionRowView { id: string; label: Localized | string; note: Localized; cells: { listedUnaddressed: boolean; unlistedAddressed: boolean; unlistedUnaddressed: boolean } }
 /** Policy extension for a source kind, defining allowed senders, admission table rows, and optional external roster sync. */
@@ -41,7 +46,7 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
 }
 /** UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available. */
 export interface ChannelLink { url: string; label: Localized; triggerId?: string }
-export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu'>>
+export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu' | 'gitlab'>>
 /** Outbound messaging adapter for a source kind's threads. */
 export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
@@ -51,6 +56,11 @@ export interface SourceChannel<C> {
    * @throws when delivery failed but may succeed on a later retry.
    */
   send(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'>
+  /**
+   * Throws when this Channel can never accept `message` as written, such as text over its word limit. The Outbox calls it
+   * before queueing a reply, so the agent that wrote it learns why to rewrite instead of a message retrying forever.
+   */
+  check?(message: OutboundMessage): void
   /** Returns the URL and label for `address`; `url` is empty when `links` lack the required deployment info. */
   link(address: Record<string, string>, links: ChannelLinks): ChannelLink
 }
@@ -73,6 +83,36 @@ export interface ThreadContext<C> {
   image?(agent: Agent, commands: Commands, trigger: Trigger, message: { id: string; text: string }, key: string, stateDir: string,
     signal: AbortSignal): Promise<unknown>
 }
+/**
+ * What the management panel shows for an interactive account login. `wait` shows the code and keeps polling, `scaned`
+ * asks the operator to confirm on the phone, `need_verifycode` asks for the code the phone displays, and `confirmed` is
+ * the only terminal success; `expired`, `blocked` and `failed` need a new `start`.
+ */
+export interface LoginView {
+  status: 'wait' | 'scaned' | 'need_verifycode' | 'expired' | 'blocked' | 'confirmed' | 'failed'
+  /** The code as a standalone SVG document for the panel to show; absent once `confirmed`. */
+  svg?: string
+  /** The login's own sentence for the operator about the current status. */
+  message?: string
+  /** Configuration fields to save once `confirmed`, in the shape the kind's `schema` accepts. */
+  credentials?: Record<string, unknown>
+}
+/**
+ * Interactive account login a source kind adds to its settings card; the panel drives it and saves the returned
+ * `credentials` as the Source's configuration, which restarts dsh-superagent when a field is in `SETUP_FIELDS`.
+ */
+export interface SourceLogin {
+  /** Label of the panel button that starts the login. */
+  label: Localized
+  /** One sentence on what the operator does, shown beside the button. */
+  hint?: Localized
+  /** Starts a new attempt, or returns the running one, with its code as `svg`. */
+  start(): Promise<LoginView>
+  /** Polls the running attempt; without a running attempt it answers `expired`. */
+  wait(): Promise<LoginView>
+  /** Supplies the code the phone displayed when the attempt answered `need_verifycode`. */
+  verify?(code: string): Promise<LoginView>
+}
 export interface TriggerContext {
   readonly messageId: string
   read(commands: Commands, part: ContextPartName, cursor?: string): Promise<ContextPart>
@@ -87,6 +127,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   kind: string
   title: Localized
   description: Localized
+  /** A conversation rather than an issue tracker, such as a chat: a shared Thread follows its live Tickets and at most one ended Ticket. */
+  chat?: true
   /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
   facts?(deployment: Deployment | undefined): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */
@@ -100,6 +142,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
+  /** Interactive login the panel offers on this kind's settings card; kinds authenticated elsewhere omit it. */
+  login?: SourceLogin
   /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
   find?(query: string): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */

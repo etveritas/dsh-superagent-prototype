@@ -13,6 +13,10 @@ export const HEALTH_TEXT = {
   sourceOff: 'Off',
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
+  wecomUnset: 'The Source is on, and its bot credentials are not set',
+  weixinUnset: 'The Source is on, and its WeChat bot token is not set',
+  gitlabCliUnset: 'The Source is on, and its GitLab CLI is not set up',
+  pingcodeUnset: 'The Source is on, and its PingCode skill or projects are not set up',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT

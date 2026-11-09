@@ -6,7 +6,19 @@
     port: 3082
 - id: dsh-superagent
   config:
+    # Optional: omitted, the state lives in `state/superagent` under the DeepSeek Harness home, so a profile can mount
+    # the bundle without any configuration. Name it to place the database elsewhere, or when another profile of the same
+    # harness home already runs dsh-superagent.
     stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
-# Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
+# Every Source plugin is enabled by default and appears in Sources settings; unconfigured ones stay paused. To leave a
+# Source out of this profile, uncomment its entry below (feishu, wecom, weixin, gitlab, pingcode).
 # - id: dsh-superagent-feishu
-#   disabled: false
+#   disabled: true
+# - id: dsh-superagent-wecom
+#   disabled: true
+# - id: dsh-superagent-weixin
+#   disabled: true
+# - id: dsh-superagent-gitlab
+#   disabled: true
+# - id: dsh-superagent-pingcode
+#   disabled: true

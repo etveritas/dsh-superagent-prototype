@@ -60,6 +60,7 @@
 .dt-event.dt-highlight { background: var(--dsw-alias-interactive-bg-hover); border-radius: 8px; padding-inline: 8px; margin-inline: -8px; }
 .dt-event-text { margin: 0; font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dt-event-actor { font-weight: 500; color: var(--dsw-alias-label-secondary); }
+.dt-sender-id { margin-left: 6px; font-weight: 400; color: var(--dsw-alias-label-caption); }
 .dt-event-quiet .dt-event-text { color: var(--dsw-alias-label-tertiary); }
 .dt-flow { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
 .dt-clamp-8 { display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
@@ -123,6 +124,11 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-card-head { display: flex; align-items: center; gap: 12px; min-height: 28px; }
 .dt-card-head .dt-row-main { flex: 1 1 0; min-width: 64px; }
 .dt-card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-card-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.dt-card-toggle { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; margin: 0 0 0 -6px; padding: 2px 6px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dt-card-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dt-card-toggle:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 0; }
+.dt-card-toggle-icon { display: inline-flex; flex: none; color: var(--dsw-alias-label-tertiary); }
 .dt-row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
 .dt-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .dt-rows-item { display: grid; grid-template-columns: repeat(var(--dt-columns), minmax(0, 1fr)) auto; gap: 8px; align-items: center; }

@@ -75,7 +75,8 @@ export const webhookKind: SourceKind<WebhookConfig> = {
 - `kind` is the stable Source id. It appears in Trigger `source`, Thread-key prefixes, the `source:webhook` settings block and the Source Policy.
 - `schema` validates stored configuration and supplies defaults. Before an operator saves an instance, the registry creates an enabled instance from those defaults. Make defaults receive nothing; this example defaults to no conversations.
 - `fields` generates the Source settings form without custom panel code. A `rows` field edits entries keyed by its first column; `advanced` hides less common settings. Implement `refreshLabels` if the Source can resolve ids to display names. Save those names under `KV.sources.labels(kind)`. Columns with `choose` and `refresh` can then offer them.
-- Optional `facts(deployment)` displays values derived by setup, such as the account behind a CLI. Setup currently checks only GitHub and Feishu fields listed in `SETUP_FIELDS`, so this example supplies no facts.
+- Optional `facts(deployment)` displays values derived by setup, such as the account behind a CLI. Setup currently checks only the GitHub, GitLab, Feishu and PingCode fields listed in `SETUP_FIELDS`, so this example supplies no facts.
+- Optional `login` adds a button and a QR code to the card for an account obtained interactively: `start()` returns the code as `svg`, `wait()` polls it, and the panel saves the returned `credentials` as the Source's configuration (`src/sources/weixin-login.ts` is the working example).
 - `health` declares the Source's health entries, initially `starting`. Registration claims each name and refuses collisions with entries such as `runtime`, `reply`, `worker` or effect kinds. Use the kind's name and reserve `sync:<id>` for Policy syncs. An `error` makes the status script exit 2 and the hourly check notify the operator, so report it only when human action may be needed.
 
 ### 3. Translate a message into a Trigger
@@ -175,6 +176,7 @@ export async function sendWebhook(host: Pick<SourceContext, 'commands'>, message
 ```
 
 - **Idempotent sends.** Outbox calls `SourceRegistry.send`, which invokes `channel.send`. Messages wait while the Source plugin is unloaded. A send may fail after the remote service received it, so retries must not duplicate messages. Use `message.id` as an idempotency key: `hookq` supports `--key`; GitHub stores a hidden comment marker; Feishu accepts an idempotency key.
+- **Refused before queueing.** `check(message)` throws when the Channel can never accept the message as written, such as IM text over the word limit. Outbox calls it before it records a reply, so the agent that wrote it gets the error and rewrites; a receipt already queued is dropped as `messageInvalid` instead of retrying forever.
 - **Permanent versus retryable failure.** Return `sent` on success and `gone` only when delivery is permanently impossible, such as the example's 410. A gone message is retained as dropped and never queued again; it appears in `GET sources` and on the Source page. Throw for other failures so Outbox retries after 5 seconds, doubling to 300 seconds. `CliError.code` is the code reported by the CLI output.
 - **Allowed destinations.** `allowed(address, config)` checks only the saved address and current configuration. Put every required fact in the address; for example, Feishu records whether the chat is direct. A destination no longer listened to is dropped, while a disabled Source leaves messages waiting. Without `allowed`, all addresses are permitted while the Source is enabled.
 - **Links.** `link(address, links)` returns the URL and label the panel displays through `SourceRegistry.link`.
@@ -248,6 +250,8 @@ If messages reply to earlier messages, add `repliesTo(trigger)`. It returns the 
 Execution settings show declared `variables` beside the prepare command even when the Source is disabled. While enabled, `values` supplies Ticket-specific values using deployment, configuration and the originating Trigger.
 
 The prepare command reads environment variables; the worker reads their values in its instructions. Use the `DSH_SUPERAGENT_<KIND>_…` prefix, return an empty value for Tickets from another Source, and never include credentials.
+
+A deployment that accepts work from several Sources must keep its one prepare command valid for a Ticket from each of them: a variable of the Source that did not start the Ticket is empty, so a command that builds a clone path from it alone fails for IM-origin Tickets. Name the repository explicitly, or make the expansion fall back to a configured default, and check that a path built from an empty value cannot silently point at the wrong checkout. Prefer the Executor's combined variables: a variable with a `role` (`repository`, `head` or `base`) feeds `DSH_SUPERAGENT_REPOSITORY` and `DSH_SUPERAGENT_WORK_REF`. The Source that started the Ticket answers the roles as a group, the first repository Source does for Tickets without one, and a role it leaves empty falls to the Executor's default repository or base branch rather than another Source's value. Check out `DSH_SUPERAGENT_WORK_REF` rather than the remote's `HEAD`, which is the default branch and not necessarily the integration branch.
 
 ### 9. The plugin entry and its loop
 
@@ -340,11 +344,11 @@ entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu
   'webhook-watch': 'src/sources/webhook.ts' },
 ```
 
-Then export the built file in `package.json` by adding `"./webhook-watch": "./lib/webhook-watch.js"` to `exports`, and add the plugin to the `insert` list of the bundle's `cordis.patch.yml`, disabled, as Feishu is:
+Then export the built file in `package.json` by adding `"./webhook-watch": "./lib/webhook-watch.js"` to `exports`, and add the plugin to the `insert` list of the bundle's `cordis.patch.yml`, disabled, so a profile opts in:
 
 ```yaml
     - id: dsh-superagent-webhook
-      name: dsh-superagent/webhook-watch
+      name: '@samanhappy/dsh-superagent/webhook-watch'
       disabled: true
 ```
 

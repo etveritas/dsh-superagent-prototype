@@ -1,5 +1,6 @@
 /** Proactive candidate assessment for the main Session: relays candidate cards, serves bounded context reads, and records outcomes. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { z } from 'zod'
 import { reasonText, threadKey, type Assessor, type AssessmentOutcome, type Candidate, type EngineForMainSession,
   type Trigger } from '../core/index.ts'
@@ -9,8 +10,11 @@ import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import { admissionContext } from '../sources/admission-context.ts'
 import { readRepositoryPath } from '../sources/github-read.ts'
+import { readGitlabPath } from '../sources/gitlab-read.ts'
+import { gitlabRef } from '../sources/gitlab-trigger.ts'
 import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
+import type { DeliveryContent } from './delivery.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
 import type { Effects } from './effects.ts'
@@ -59,7 +63,9 @@ export interface AssessorHost {
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
   threadContext(trigger: Trigger): TriggerContext | undefined
   /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
-  deliver(requestId: string, text: string): Promise<void>
+  deliver(requestId: string, content: string | DeliveryContent): Promise<void>
+  /** Reads the images a Trigger's message carries for the main Session, empty for a Source or message without them. */
+  images(trigger: Trigger): Promise<readonly ImageAttachmentRef[]>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
 }
 
@@ -96,7 +102,11 @@ export class MasterAssessor implements Assessor {
     host.effects.handle('assessment', async ({ triggerId }, evalId) => {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
-      await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }))
+      const card = JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) })
+      // An explicit request is routed, never assessed, so its message's images travel with the card; an assessment reads them itself.
+      const trigger = candidate.triggers.at(-1)
+      const images = candidate.strength === 'explicit' && trigger ? await this.host.images(trigger) : []
+      await this.host.deliver(`candidate:${evalId}`, images.length ? { text: card, images } : card)
       this.host.engine.candidateDelivered(evalId)
     }, { limit: () => host.paused() ? 0 : 4 })
   }
@@ -262,8 +272,14 @@ export class MasterAssessor implements Assessor {
         const next = result.next ? { trigger_id: trigger.id, resource: 'thread', cursor: result.next } : null
         body = JSON.stringify({ images: references, next_read: next, ...result.body })
       }
-      else {
+      else if (trigger.source === 'github') {
         body = await readRepositoryPath(commands, read.path!, read.resource === 'directory' ? 'directory' : 'file')
+      }
+      else {
+        // A GitLab Trigger reads its own project's default branch, so an assessment sees the code it is asked about.
+        const ref = gitlabRef(trigger)
+        if (!ref) throw new Error('This Source has no repository file reads')
+        body = await readGitlabPath(commands, ref.project, read.path!, read.resource === 'directory' ? 'directory' : 'file')
       }
       snapshots.set(cacheKey, body)
       return textPage(read.resource, body, read.offset, 4000)

@@ -3,13 +3,23 @@
 # refuses to start without stateDir.
 - insert:
     - id: dsh-superagent
-      name: dsh-superagent
+      name: 'dsh-superagent'
     - id: dsh-superagent-github
-      name: dsh-superagent/github-watch
-    # Optional Feishu Source; requires configuring a bot CLI after enabling.
+      name: 'dsh-superagent/github-watch'
+    # Every Source plugin ships enabled, so Sources settings lists all of them and each Source stays paused until it is
+    # configured: Feishu (bot lark-cli), WeCom (intelligent robot's ID and secret), WeChat (QR-code login token), GitLab
+    # (glab wrapper and projects), and PingCode (skill directory and projects). A profile leaves a Source out of its tree
+    # by disabling that entry with `disabled: true`.
     - id: dsh-superagent-feishu
-      name: dsh-superagent/feishu-watch
-      disabled: true
+      name: 'dsh-superagent/feishu-watch'
+    - id: dsh-superagent-wecom
+      name: 'dsh-superagent/wecom-watch'
+    - id: dsh-superagent-weixin
+      name: 'dsh-superagent/weixin-watch'
+    - id: dsh-superagent-gitlab
+      name: 'dsh-superagent/gitlab-watch'
+    - id: dsh-superagent-pingcode
+      name: 'dsh-superagent/pingcode-watch'
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.
     # It is DSH's `standard` preset with only what a worker needs, and a shell whose foreground command moves to a background job
     # after 5 seconds, so a long command does not hold back a person's message, which the Session takes at its next step. Left

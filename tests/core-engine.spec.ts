@@ -11,8 +11,9 @@ function trigger(id: string, overrides: Partial<Trigger> = {}): Trigger {
 interface Hooks {
   emit?: (event: { type: string; data: Record<string, unknown> }) => void
   prepareTicket?: EngineOptions['prepareTicket']
+  chatThread?: EngineOptions['chatThread']
 }
-function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }: Hooks = {}) {
+function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket, chatThread }: Hooks = {}) {
   const repo = new MemoryRepositories()
   const outbox: OutboundMessage[] = []
   const withdrawn: string[] = []
@@ -41,7 +42,8 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
     withdraw: id => { withdrawn.push(id) },
   }
   const engine = new Engine({ repo, scope, policy: () => policy, assessor, executor, outbox: queued,
-    ...emit ? { emit } : {}, ...prepareTicket ? { prepareTicket } : {}, now: () => new Date(Date.UTC(2026, 8, 23, 0, 0, clock)).toISOString() })
+    ...emit ? { emit } : {}, ...prepareTicket ? { prepareTicket } : {}, ...chatThread ? { chatThread } : {},
+    now: () => new Date(Date.UTC(2026, 8, 23, 0, 0, clock)).toISOString() })
   /** Simulate the executor starting queued assignments (unless `launch` is false) and delivering pending ticket inputs. */
   function settle({ launch = true } = {}) {
     for (;;) {
@@ -265,6 +267,43 @@ describe('subscription fan-out', () => {
     expect(h.engine.unsubscribe('chat:t1')).toBe(true)
     h.engine.receive(trigger('2')); h.pump()
     expect(h.repo.tickets.get(decision.ticketId!)!.inputs).toEqual([])
+  })
+  it('unsubscribes one ticket from a thread and leaves the thread\'s other tickets', () => {
+    const h = harness()
+    const first = accepted(h).ticketId!
+    const second = accepted(h, '2', 't2').ticketId!
+    h.engine.bindThread(second, { source: 'chat', id: 't1' }, false)
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toEqual([first, second])
+    expect(h.engine.unsubscribe('chat:t1', first)).toBe(true)
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toEqual([second])
+    expect(h.engine.unsubscribe('chat:t1', first)).toBe(false)
+  })
+  it('stops a ticket following a shared chat thread when it ends, keeping its other threads', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { chatThread: key => key.startsWith('chat:'), emit: event => events.push(event) })
+    const ticketId = accepted(h).ticketId!
+    const other = accepted(h, '2', 't2').ticketId!
+    h.engine.bindThread(other, { source: 'chat', id: 't1' }, false)
+    h.engine.bindThread(ticketId, { source: 'gh', id: 'pr-5' }, true)
+    h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    h.engine.threadClosed({ source: 'gh', id: 'pr-5' }, 'merged', '2026-09-23T00:00:30Z')
+    expect(h.repo.tickets.get(ticketId)!.ended).toMatchObject({ outcome: 'merged' })
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toEqual([other])
+    expect(h.repo.threads.get('gh:pr-5')!.subscriptions).toEqual([ticketId])
+    expect(events.filter(event => event.type === 'thread.unsubscribed').map(event => event.data))
+      .toEqual([{ threadKey: 'chat:t1', ticketId, by: 'ticket' }])
+  })
+  it('drops an ended chat ticket when a new ticket subscribes to its thread', () => {
+    const h = harness({}, { chatThread: key => key.startsWith('chat:') })
+    const first = accepted(h).ticketId!
+    h.engine.stopTicket(first)
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toEqual([first])
+    h.engine.receive(trigger('2')); h.pump()
+    const second = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Next', scope: 'small', reason: 'requested', acknowledgement: 'ok' }).ticketId!
+    h.settle()
+    expect(h.repo.tickets.get(first)!.ended).toBeDefined()
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toEqual([second])
   })
   it('lets an Executor drop a thread attached to its ticket, keeping the thread\'s other tickets, but not its own threads', async () => {
     const events: { type: string; data: Record<string, unknown> }[] = []
@@ -1047,6 +1086,30 @@ describe('replies', () => {
     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
     expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Done' })).toMatchObject({ status: 'pending' })
     expect(h.outbox.at(-1)!.channel).toEqual(trigger('1').channel)
+  })
+  it('sends one failure notice to the ticket\'s starting conversation, after a failed report only', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    expect(() => h.engine.reply({ purpose: 'failure', ticketId, text: 'x' })).toThrow(new UserError('notFailed'))
+    h.engine.report(ticketId, { state: 'progress', summary: 'working' })
+    expect(() => h.engine.reply({ purpose: 'failure', ticketId, text: 'x' })).toThrow(new UserError('notFailed'))
+    h.engine.report(ticketId, { state: 'blocked', summary: 'stuck' })
+    expect(() => h.engine.reply({ purpose: 'failure', ticketId, text: 'x' })).toThrow(new UserError('notFailed'))
+    h.engine.report(ticketId, { state: 'failed', summary: 'The prepare command failed: fatal: no such clone' })
+    const failed = h.repo.tickets.get(ticketId)!.assignments.at(-1)!.report!
+    expect(h.engine.reply({ purpose: 'failure', ticketId, text: '没做成：执行环境准备失败，修好后我再试。' }))
+      .toEqual({ id: key('failure-reply', ticketId, failed.at), status: 'pending', reused: false })
+    expect(h.outbox.at(-1)).toMatchObject({ channel: trigger('1').channel, text: '没做成：执行环境准备失败，修好后我再试。', kind: 'reply', ticketId })
+    // One notice covers one failed report: another wording reuses the queued message.
+    expect(h.engine.reply({ purpose: 'failure', ticketId, text: '另一句' })).toMatchObject({ reused: true })
+    expect(h.outbox.filter(message => message.kind === 'reply')).toHaveLength(1)
+    // A failure with an open question is attention, not a failure notice.
+    const asking = accepted(h, '4', 't4').ticketId!
+    h.engine.report(asking, { state: 'failed', summary: 'The prepare command failed', question: 'Which repository?' })
+    expect(() => h.engine.reply({ purpose: 'failure', ticketId: asking, text: 'x' })).toThrow(new UserError('notFailed'))
+    // A ready report is a result, not a failure notice; the ticket ends after it.
+    h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+    expect(() => h.engine.reply({ purpose: 'failure', ticketId, text: 'x' })).toThrow(new UserError('notFailed'))
   })
 })
 describe('ticket commands', () => {

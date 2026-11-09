@@ -222,11 +222,11 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_reply',
-      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
+      description: `Send an answer to a human question, a ready result, a failure notice, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. purpose=failure needs an open ticket whose latest report is failed with no open question, and sends one notice per failed report. IM limit: ${IM_WORDS} words.`,
       schema: z.object({
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
         ticket_id: z.string().optional(),
-        purpose: z.enum(['answer', 'result', 'attention']),
+        purpose: z.enum(['answer', 'result', 'attention', 'failure']),
         human_action: z.string().trim().min(1).optional().describe('Required for attention: the ticket\'s current attention question.'),
         text: z.string().min(1).max(20000),
       }).strict(),
@@ -239,10 +239,14 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_thread_unsubscribe',
-      description: 'Drop every ticket subscription on a thread. Later messages there no longer reach those tickets as context; a new positive decision can subscribe it again.',
-      schema: z.object({ thread: z.string().describe('Thread key, for example github:123 or feishu:<chat>:<root message>') }).strict(),
+      description: 'Drop every ticket subscription on a thread, or only one ticket\'s when ticket_id is given. Later messages there no longer reach the removed tickets as context; a new positive decision can subscribe it again.',
+      schema: z.object({
+        thread: z.string().describe('Thread key, for example github:123 or feishu:<chat>:<root message>'),
+        ticket_id: z.string().min(1).optional().describe('Drop only this ticket\'s subscription, leaving the thread\'s other tickets'),
+      }).strict(),
       execute: async args => {
-        return { removed: host.quietly(() => host.engine.unsubscribe(args.thread)), thread: args.thread }
+        const removed = host.quietly(() => host.engine.unsubscribe(args.thread, args.ticket_id))
+        return { removed, thread: args.thread, ...(args.ticket_id ? { ticket_id: args.ticket_id } : {}) }
       },
     }),
     tool({

@@ -8,8 +8,8 @@ type SourceSettings = SettingsVersion['settings']['sources'][string]
 /** Change codes localized by the web panel as `change.<code>`. */
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
-  | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
-  | 'blockedCommands'
+  | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'repository'
+  | 'baseBranch' | 'prepareCommand' | 'blockedCommands'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
 export interface SettingsChange {
   code: SettingsChangeCode; items?: string[]; from?: string | number | boolean; to?: string | number | boolean; name?: string; source?: string
@@ -67,6 +67,8 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (!same(before.eval.model, after.eval.model)) changes.push({ code: 'evalModel' })
   if (!same(before.executor.model, after.executor.model)) changes.push({ code: 'executorModel' })
   if (before.executor.maxWorkers !== after.executor.maxWorkers) changes.push({ code: 'maxWorkers', from: before.executor.maxWorkers, to: after.executor.maxWorkers })
+  if (before.executor.repository !== after.executor.repository) changes.push({ code: 'repository', from: before.executor.repository, to: after.executor.repository })
+  if (before.executor.baseBranch !== after.executor.baseBranch) changes.push({ code: 'baseBranch', from: before.executor.baseBranch, to: after.executor.baseBranch })
   if (before.paused !== after.paused) changes.push({ code: after.paused ? 'paused' : 'resumed' })
   if (before.executor.directory !== after.executor.directory) changes.push({ code: 'executionDirectory', from: before.executor.directory, to: after.executor.directory })
   if (before.executor.prepare !== after.executor.prepare) changes.push({ code: 'prepareCommand' })

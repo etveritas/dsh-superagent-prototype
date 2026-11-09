@@ -93,8 +93,8 @@ export interface DomainEvents {
   'assignment.started': { ticketId: string; assignmentId: string }
   'assignment.ended': { ticketId: string; assignmentId: string; reason: string }
   'thread.subscribed': { threadKey: string; ticketId: string }
-  /** A person dropped every ticket's Subscription, or a ticket's Executor its own, for `reason`. */
-  'thread.unsubscribed': { threadKey: string; ticketId: string; by: 'person' | 'executor'; reason?: string }
+  /** A person dropped every ticket's Subscription, a ticket's Executor its own, or a ticket its chat Threads as it ended. */
+  'thread.unsubscribed': { threadKey: string; ticketId: string; by: 'person' | 'executor' | 'ticket'; reason?: string }
   'trigger.requeued': { triggerId: string }
   /** A person's follow-up that reached tickets and that an earlier version also queued for Eval left the queue. */
   'trigger.followup': { triggerId: string }

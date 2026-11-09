@@ -127,10 +127,10 @@ export class Engine {
   requestStatus(ticketId: string): boolean { return this.repo.atomic(() => this.tickets.requestStatus(ticketId)) }
   /**
    * Queue a message for the Channel its purpose names: an acknowledgement or an answer goes where the person's message was
-   * written, attention where the message that raised the question was, else, like a result, to the conversation the ticket
-   * started in. A message queued before is not queued again (see `Replies.reply`).
+   * written, attention where the message that raised the question was, else, like a result or a failure notice, to the
+   * conversation the ticket started in. A message queued before is not queued again (see `Replies.reply`).
    * @throws UserError when the ticket or trigger is unknown or the purpose's rule refuses it, such as a result of a ticket that
-   * is not ready, completed, merged, or dropped.
+   * is not ready, completed, merged, or dropped, or a failure notice of a ticket with no failed report.
    */
   reply(request: ReplyRequest): Reply { return this.repo.atomic(() => this.replies.reply(request)) }
 
@@ -149,10 +149,12 @@ export class Engine {
    */
   dismiss(decisionId: string): Decision { return this.repo.atomic(() => this.evals.dismiss(decisionId)) }
   /**
-   * Drop every ticket's Subscription to a Thread, until a new Decision subscribes one again.
+   * Drop a Thread's Subscriptions, every ticket's or only `ticketId`'s, until a new Decision subscribes one again.
    * @returns whether a Subscription was dropped.
    */
-  unsubscribe(thread: string): boolean { return this.repo.atomic(() => this.tickets.dropSubscriptions(thread, 'person')) }
+  unsubscribe(thread: string, ticketId?: string): boolean {
+    return this.repo.atomic(() => this.tickets.dropSubscriptions(thread, 'person', ticketId))
+  }
   /**
    * A person stops a ticket, which withdraws its Mandate: it ends and receives nothing more.
    * @throws UserError when the ticket is unknown.

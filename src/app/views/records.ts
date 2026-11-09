@@ -193,18 +193,25 @@ const AuditSchema = z.object({
 export type DecisionOutcome = DecisionKind | 'wouldAccept'
 const outcomeOf = (decision: Decision): DecisionOutcome =>
   decision.kind === 'ignore' && AuditSchema.parse(decision.audit ?? {}).would_accept ? 'wouldAccept' : decision.kind
+/** The senders of a batch of Triggers, once each and without automated ones, so a Decision names whom it judged. */
+function sendersOf(view: Snapshot, triggers: Trigger[]): ActorView[] {
+  const each = triggers.flatMap(trigger => trigger.actor.id
+    ? [[`${trigger.actor.source}:${trigger.actor.id}`, view.actor(trigger.actor, trigger.human)] as const] : [])
+  return [...new Map(each).values()]
+}
 export function decisionView(view: Snapshot, decision: Decision) {
   const { store } = view
   const thread = store.threads.get(decision.threadKey)
-  const texts = decision.triggerIds.flatMap(id => { const trigger = store.triggers.get(id); return trigger ? [preview(trigger.text)] : [] })
+  const judged = decision.triggerIds.flatMap(id => { const trigger = store.triggers.get(id); return trigger ? [trigger] : [] })
   const audit = AuditSchema.parse(decision.audit ?? {})
   // Fall back to `matches` for assessments recorded by older versions.
-  const judged = audit.rule_assessments ?? audit.matches?.map(match => ({ ...match, matched: true })) ?? []
+  const rules = audit.rule_assessments ?? audit.matches?.map(match => ({ ...match, matched: true })) ?? []
   return { id: decision.id, kind: decision.kind, outcome: outcomeOf(decision), reason: decision.reason, at: decision.at,
     strength: decision.strength, ticketId: decision.ticketId, triggerIds: decision.triggerIds, thread: decision.threadKey,
-    rules: judged.map(rule => ({ ...view.rule(rule.rule_id), matched: rule.matched, reason: rule.reason })),
+    rules: rules.map(rule => ({ ...view.rule(rule.rule_id), matched: rule.matched, reason: rule.reason })),
     ...audit.direction ? { direction: audit.direction } : {},
-    ...thread ? { threadTitle: threadTitle(store, thread) } : {}, preview: texts.join(' / '),
+    ...thread ? { threadTitle: threadTitle(store, thread) } : {}, actors: sendersOf(view, judged),
+    preview: judged.map(trigger => preview(trigger.text)).join(' / '),
     ticketTitle: decision.ticketId ? store.tickets.get(decision.ticketId)?.title : undefined }
 }
 export type DecisionView = ReturnType<typeof decisionView>

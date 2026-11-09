@@ -19,6 +19,7 @@ import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
+import { gitlabKind } from '../../src/sources/gitlab.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
@@ -77,9 +78,11 @@ export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'g
   ...thread === false ? {} : { thread: source === 'feishu' ? 'feishu:oc_1:om_root' : 'github:42' },
 })
 const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
+/** The tiny standalone SVG the fake login answers, matching the shape qrcode-generator returns. */
+const LOGIN_SVG = '<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
-const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, gitlabKind] as unknown as SourceKind[]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
@@ -108,13 +111,18 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** Interactive logins the settings cards offer, keyed by Source ID, and the answer their two routes give. */
+  logins: Record<string, NonNullable<SourceView['login']>>
+  loginAnswer: (request: { call: 'start' | 'wait' | 'verify'; code?: string }) => LoginPageView
 }
 export let server: PanelServer
 
 function resolved() {
   const accounts = server.setup.accounts
   return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
-    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined },
+    ...accounts.gitlab ? { gitlab: { ...accounts.gitlab, cli: '/bin/false', id: 7, email: '7-agent-bot@users.noreply.gitlab.com',
+      projects: ['acme/widgets'] } } : {} }) : undefined
 }
 /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
 function healthOf(name: string): Health {
@@ -124,7 +132,8 @@ function healthOf(name: string): Health {
   return server.setup.feishuProblem ? { state: 'paused', detail: server.setup.feishuProblem.detail } : { state: 'error',
     detail: 'socket closed' }
 }
-const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
+const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem, server.setup.gitlabProblem,
+  server.setup.pingcodeProblem].find(item => item?.place === id) ?? undefined
 function sourceSettings(): SourceView[] {
   return KINDS.map(kind => {
     const config = kind.schema.parse(server.settings.sources[kind.kind]?.config ?? {})
@@ -134,12 +143,13 @@ function sourceSettings(): SourceView[] {
       health: server.health[`sync:${kind.kind}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
       ? { rows: kind.policy.rows(config) } : {}, ...sync ? { sync } : {} }
+    const login = server.logins[kind.kind]
     return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true,
       value: { enabled: server.settings.sources[kind.kind]?.enabled ?? true, config },
         revision: server.revisions[`source:${kind.kind}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
-      labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {}, ...problem ? { problem } : {},
-      ...policy ? { policy } : {} }
+      labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {},
+      ...login ? { login } : {}, ...problem ? { problem } : {}, ...policy ? { policy } : {} }
   })
 }
 function sourceStatuses(): SourceStatusRow[] {
@@ -203,7 +213,8 @@ const overviewView = (): ApiResponse<'GET overview'> => {
 }
 export const acceptDecision = (): NonNullable<TicketPageView['decision']> => ({ id: 'd1', kind: 'accept', outcome: 'accept',
   reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', ticketId: undefined,
-  triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
+  triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], actors: [actor('feishu', MEMBER)], preview: '@bot 修一下',
+  ticketTitle: undefined })
 const ticketDetail = (): TicketPageView => ({
   ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()],
   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
@@ -248,11 +259,14 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
-    setup: { machine: MACHINE, problem: null, feishuProblem: null,
+    // No Source card offers a login until a test asks for one; the canned answer keeps the routes plausible.
+    logins: {}, loginAnswer: ({ call }) => call === 'verify' ? { status: 'confirmed', restarting: false }
+      : { status: 'wait', svg: LOGIN_SVG },
+    setup: { machine: MACHINE, problem: null, feishuProblem: null, gitlabProblem: null, pingcodeProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
-        name: 'Widgets Bot' } } },
+        name: 'Widgets Bot' }, gitlab: { host: 'gitlab.com', login: 'agent-bot' }, pingcode: null } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
-    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],
+    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github', 'gitlab'],
       skillPrefix: SKILL_PREFIX, revision: 0, current: { ...defaults, config: defaultPrompts() },
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
       defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
@@ -279,12 +293,14 @@ function initial(): PanelServer {
 /** A refusal response carrying the host's HTTP status code and JSON error body. Returned by route handlers when a request is rejected. */
 class Refusal { constructor(readonly status: 400 | 404 | 409 | 500, readonly body: Record<string, unknown>) {} }
 const refuse = (status: Refusal['status'], error: string, more: Record<string, unknown> = {}) => new Refusal(status, { error, ...more })
+type LoginPageView = ApiResponse<'GET sources/:id/login'>
 type Query<K extends keyof Api> = Api[K] extends { query?: infer Q } ? keyof NonNullable<Q> & string : never
-type Body<K extends keyof Api> = Api[K] extends { body: infer B } ? B : undefined
+type Body<K extends keyof Api> = Api[K] extends { body: infer B } ? B
+  : 'body' extends keyof Api[K] ? Api[K] extends { body?: infer B } ? B | undefined : never
+  : undefined
 interface Request<K extends keyof Api> { params: RouteParams<K>; query: Partial<Record<Query<K>, string>>; body: Body<K> }
 type Answer<K extends keyof Api> = ApiResponse<K> | Refusal
-type Route<K extends keyof Api> = { query?: readonly Query<K>[]; answer: (request: Request<K>) => Answer<K> | Promise<Answer<K>> }
-  & (Api[K] extends { body: unknown } ? { body: true } : { body?: never })
+type Route<K extends keyof Api> = { query?: readonly Query<K>[]; body?: 'required' | 'optional'; answer: (request: Request<K>) => Answer<K> | Promise<Answer<K>> }
 const page = <T>(items: T[]) => ({ items, total: items.length, next_offset: null })
 const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
@@ -306,6 +322,11 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     const added = Object.values(server.joining ?? {}); server.joined = { ...server.joined, ...server.joining }; server.joining = undefined
     return { added }
   } },
+  'POST sources/:id/login': { body: 'optional', answer: ({ body }) => {
+    const code = body?.code
+    return server.loginAnswer({ call: code ? 'verify' : 'start', ...code ? { code } : {} })
+  } },
+  'GET sources/:id/login': { answer: () => server.loginAnswer({ call: 'wait' }) },
   'GET threads': { query: ['filter', 'offset', 'limit'], answer: () => page(server.threads) },
   'GET threads/:key': { query: ['limit', 'before', 'around'], answer: ({ params, query }) => {
     const found = server.threadPages(params.key, query)
@@ -314,10 +335,11 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     const queued = (item: TriggerRow) => ({ ...item, disposition: { ...item.disposition, queued: true }, actions: { requeue: false } })
     return { ...found, timeline: found.timeline.map(item => server.queued.has(item.id) ? queued(item) : item) }
   } },
-  'POST threads/:key/unsubscribe': { answer: ({ params }) => {
-    const removed = server.threads.length > 0
-    server.threads = []
-    return { removed, thread: params.key, context_delivery: 'injected' }
+  'POST threads/:key/unsubscribe': { query: ['ticket_id'], answer: ({ params, query }) => {
+    const ticketId = query.ticket_id
+    const removed = ticketId ? true : server.threads.length > 0
+    if (!ticketId) server.threads = []
+    return { removed, thread: params.key, ...(ticketId ? { ticket_id: ticketId } : {}), context_delivery: 'injected' }
   } },
   'POST triggers/:id/requeue': { answer: ({ params }) => { server.queued.add(params.id); return { queued: true } } },
   'GET decisions': { query: ['kind', 'window', 'offset', 'limit'], answer: ({ query }) =>
@@ -338,12 +360,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
   } },
-  'POST executor/pause': { body: true, answer: ({ body }) => {
+  'POST executor/pause': { body: 'required', answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
     return { paused: body.paused }
   } },
-  'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
+  'PUT settings/:block': { body: 'required', answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
@@ -373,7 +395,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
       reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
   'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
-  'PUT prompts': { body: true, answer: ({ body }) => {
+  'PUT prompts': { body: 'required', answer: ({ body }) => {
     const { revision } = server.prompts
     if (body.baseRevision !== revision) return refuse(409,
       `Prompt version changed to ${revision}; compare the latest version before saving`)
@@ -388,7 +410,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.prompts.current = promptVersion(server.prompts.revision, Object.keys(overrides).length ? { ...config, overrides } : config)
     return { revision: server.prompts.revision, context_delivery: 'injected' }
   } },
-  'POST prompts/preview': { body: true, answer: ({ body }) => {
+  'POST prompts/preview': { body: 'required', answer: ({ body }) => {
     const skills = [...server.setup.accounts?.feishu ? ['feishu'] : [], 'github', ...Object.keys(body.skills)].map(name => [name,
       composeSkill(body, name)])
     // The generated parts from their templates, without variables or rules.
@@ -414,7 +436,8 @@ async function run<K extends keyof Api>(key: K, params: Record<string, string>, 
   const route: Route<K> = ROUTES[key]
   const read: readonly string[] = route.query ?? []
   for (const name of query.keys()) if (!read.includes(name)) server.misuse.push(`${key} with the query parameter ${name}`)
-  if ((body !== undefined) !== !!route.body) server.misuse.push(`${key} ${body === undefined ? 'without' : 'with'} a body`)
+  const refused = route.body === 'required' ? body === undefined : route.body === undefined && body !== undefined
+  if (refused) server.misuse.push(`${key} ${body === undefined ? 'without' : 'with'} a body`)
   const values: Partial<Record<Query<K>, string>> = {}
   for (const name of route.query ?? []) { const value = query.get(name); if (value !== null) values[name] = value }
   return route.answer({ params: params as RouteParams<K>, query: values, body: body as Body<K> })

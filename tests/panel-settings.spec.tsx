@@ -53,7 +53,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
     'worker-model'); await type(effort as HTMLInputElement, 'high')
   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', repository: '', baseBranch: '',
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
@@ -102,6 +102,7 @@ it('shows save and discard only while a settings block has edits, at the end of 
   await click(find(zh['term.source'], '.dt-settings-link'))
   expect(all('.dt-savebar')).toHaveLength(0)
   const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
+  await click(github.querySelector<HTMLButtonElement>('.dt-card-toggle')!)
   await type(field<HTMLInputElement>('智能体的 GitHub CLI'), 'gh-other')
   expect(github.lastElementChild!.classList.contains('dt-savebar')).toBe(true)
   // The agent CLI is read by setup, so the bar warns that saving restarts dsh-superagent and interrupts running work.

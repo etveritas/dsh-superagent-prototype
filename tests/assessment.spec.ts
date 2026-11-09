@@ -1,7 +1,9 @@
 /** Main-session assessor per-eval state and context loading. */
 import { expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { AssessmentSchema, EvalReadSchema, MasterAssessor, type AssessorHost } from '../src/app/assessment.ts'
+import type { DeliveryContent } from '../src/app/delivery.ts'
 import { mainAdmissionPolicy } from '../src/app/context.ts'
 import { Engine, MemoryRepositories, type Executor, type Policy, type Trigger } from '../src/core/index.ts'
 import type { Commands } from '../src/infra/commands.ts'
@@ -36,10 +38,19 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const sources = new SourceRegistry(() => SettingsSchema.parse({}))
   sources.register(githubKind)
   let engine!: Engine
+  // The `assessment` effect handler the runtime would register, so a test can run one candidate's delivery.
+  const handlers = new Map<string, (payload: { triggerId: string }, evalId: string) => unknown>()
+  const delivered: { requestId: string; content: string | DeliveryContent }[] = []
+  const image = { attachmentId: 'attachment-1', mediaType: 'image/jpeg', bytes: 4, width: 1, height: 1 } as unknown as ImageAttachmentRef
+  const images = vi.fn(async () => [image])
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
-    effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
+    effects: { enqueue: () => {}, handle: (kind, handler) => { handlers.set(kind, handler as unknown as (payload: { triggerId: string }, evalId: string) => unknown) } },
+    paused: () => false,
+    deliver: async (requestId, content) => { delivered.push({ requestId, content }) },
+    images,
+    candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }
   const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
@@ -57,7 +68,13 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   // Per-Eval state retained by the assessor and released when the Eval ends.
   const kept = assessor as unknown as { evals: Map<string, unknown> }
   const size = () => kept.evals.size
-  return { repo, engine, assessor, tools, size, gate }
+  /** Runs the delivery of `triggerId`'s candidate card, as the effect queue would once it is due. */
+  const deliverCandidate = async (triggerId: string) => {
+    const candidate = engine.candidate(triggerId)!
+    await handlers.get('assessment')!({ triggerId }, candidate.evalId)
+    return delivered.at(-1)!
+  }
+  return { repo, engine, assessor, tools, size, gate, delivered, images, deliverCandidate }
 }
 const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', threads: [{ source: 'github', id: String(n) }], actor: { source: 'github', id: 'bob' }, human: true,
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
@@ -120,6 +137,20 @@ it('routes an explicit candidate instead of assessing it: each eval tool names t
   const direction = { implementation_requested: false, target_basis: 'undetermined', requires_design_decision: false, evidence: 'chatter' }
   const decision = { trigger_id: 'issue-1', decision: 'ignore', rule_assessments: [], direction, title: 't', scope: 's', reason: 'r' }
   await expect(s.tools.orchestrator_eval_decide!(decision, signal)).rejects.toThrow(routed)
+})
+
+it('sends an explicit request\'s images with its card, while an inferred one leaves them to its assessment', async () => {
+  const explicit = setup('explicit')
+  explicit.engine.receive(issue(3)); explicit.engine.evaluateDue()
+  const card = await explicit.deliverCandidate('issue-3')
+  expect(explicit.images).toHaveBeenCalledWith(expect.objectContaining({ id: 'issue-3' }))
+  expect(JSON.parse((card.content as DeliveryContent).text)).toMatchObject({ kind: 'candidate' })
+  expect((card.content as DeliveryContent).images).toEqual([expect.objectContaining({ attachmentId: 'attachment-1' })])
+  const inferred = setup('inferred')
+  inferred.engine.receive(issue(4)); inferred.engine.evaluateDue()
+  const assessed = await inferred.deliverCandidate('issue-4')
+  expect(inferred.images).not.toHaveBeenCalled()
+  expect(assessed.content).toEqual(expect.any(String))
 })
 
 it('asks the assessment only for decisions its tool accepts, which no longer include reopen or stop', () => {

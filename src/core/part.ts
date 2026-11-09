@@ -12,6 +12,8 @@ export interface EngineOptions {
   assessor: Assessor
   executor: Executor
   outbox: Outbox
+  /** Whether a Thread is a chat conversation, where a shared Thread follows live Tickets and at most one ended Ticket. */
+  chatThread?: (threadKey: string) => boolean
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
   now?: () => string
   emit?: (event: DomainEvent) => void

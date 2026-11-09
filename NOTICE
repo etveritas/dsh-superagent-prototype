@@ -1,0 +1,50 @@
+# NOTICE
+
+dsh-superagent is a fork of
+[deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype).
+
+## Upstream
+
+Copyright (c) 2026 DeepSeek Harness Team, licensed under the MIT License.
+The upstream licence text is preserved unchanged in [LICENSE](LICENSE), and the
+upstream commits are kept as the base of this repository's history.
+
+## This fork
+
+Copyright (c) 2026 samanhappy, licensed under the MIT License.
+
+Additions in this fork include the GitLab, PingCode, WeCom and WeChat Sources, the
+Skills that accompany GitLab, PingCode and WeCom, their panel settings and setup
+checks, the CI workflow, and the documentation written for them. They are distributed
+under the same MIT terms as the upstream work.
+
+This fork is not affiliated with, endorsed by or supported by DeepSeek or the
+DeepSeek Harness team.
+
+## Third-party components
+
+Used at runtime, installed from the public registry, and not redistributed here:
+
+- `proper-lockfile` (MIT)
+- `qrcode-generator` (MIT)
+- `ws` (MIT)
+- `zod` (MIT)
+
+Linked as peer dependencies (not redistributed), and partly adapted:
+
+- DeepSeek Harness and its `@deepseek-ai/*` packages (MIT, Copyright (c) 2026
+  DeepSeek). `src/client/controls.tsx` is a local adaptation of DeepSeek
+  Harness's controls and stays under the same MIT terms.
+
+Protocol references (no files from these packages are included):
+
+- `@tencent-weixin/openclaw-weixin` (MIT, Tencent): the WeChat Source speaks the
+  iLink bot protocol that this package documents and uses.
+- `@wecom/aibot-node-sdk` (MIT, WecomTeam): the WeCom Source speaks the
+  documented long-connection protocol.
+
+## Trademarks
+
+DeepSeek, DeepSeek Harness, WeChat, WeCom, Feishu, Lark, PingCode and GitLab are
+trademarks of their respective owners. They are used here only to describe what
+the software connects to. No affiliation or endorsement is claimed.

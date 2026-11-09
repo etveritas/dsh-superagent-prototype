@@ -41,6 +41,11 @@ export class SourceRegistry implements SourceScope {
     return new Map(names.flatMap(name => { const entry = this.health.get(name); return entry ? [[name, entry] as const] : [] }))
   }
   kind(id: string): SourceKind | undefined { return this.kinds.get(id) }
+  /** Whether a Thread belongs to a chat Source, where a shared Thread follows live Tickets and at most one ended Ticket. */
+  isChatThread(key: string): boolean {
+    const at = key.indexOf(':')
+    return at > 0 && this.kinds.get(key.slice(0, at))?.chat === true
+  }
   /** Every registered kind's instance ordered by ID, followed by stored instances whose kind is not installed (with their config kept as stored). */
   instances(settings = this.settings()): (SourceInstance & { installed: boolean })[] {
     const installed = [...this.kinds.values()].sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ ...this.resolve(kind, settings.sources[kind.kind]), installed: true }))
@@ -97,6 +102,8 @@ export class SourceRegistry implements SourceScope {
     if (!kind) return 'waiting'
     return kind.channel ? kind.channel.send({ commands }, message) : 'gone'
   }
+  /** Throws when the message's Channel refuses it as written, so the Outbox can refuse a reply before queueing it. */
+  check(message: OutboundMessage): void { this.kinds.get(message.channel.source)?.channel?.check?.(message) }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {
     const link = this.kinds.get(channel.source)?.channel?.link(channel.address, links)
     return link ?? { url: '', label: { zh: channel.source, en: channel.source } }

@@ -30,6 +30,7 @@ export const USER_ERRORS = {
   ackNoChannel: ['refused', 'Acknowledgement requires an assigned human source message'],
   ackNotPerson: ['refused', 'Use the original human trigger, not a bot, CI or worker report'],
   notReady: ['refused', 'Ticket is not ready for delivery. Keep progress internal and wait for a verified ready report; do not relabel progress as an answer or send it through another channel.'],
+  notFailed: ['refused', 'A failure notice needs an open ticket whose latest report is failed with no open question. Progress, blocked work and ready reports are not failures; a question, with or without a failure, goes through attention.'],
   notAttention: ['refused', 'Attention requires the ticket\'s current attention question in human_action. Routine unfinished work stays internal.'],
   notQuestion: ['refused', 'An answer must target the original human question, not a worker report or automated trigger'],
   noAnswer: ['refused', 'No worker answer is ready for this human trigger. Wait for the worker\'s report, or request one with orchestrator_ticket_request_status, which acts only on a worker that reported waiting; ordinary progress cannot be relabelled as an answer.'],

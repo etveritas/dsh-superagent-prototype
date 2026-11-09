@@ -1,6 +1,7 @@
 /** Idempotent message delivery to DSH agents across Session restarts. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -12,6 +13,8 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 type Seen = { ids: Set<string>; loaded?: Promise<void> }
+/** One relayed message: its text, and the images the receiving Session should see with it. */
+export interface DeliveryContent { text: string; images?: readonly ImageAttachmentRef[] }
 /** The id of the message delivered under `requestId`, the same on every retry. */
 export const messageId = (requestId: string) => MessageId(`dsh-superagent:${requestId}`)
 /** Extracts the idempotency key from current or legacy plugin message sources. */
@@ -63,8 +66,10 @@ export class AgentDelivery {
     return (await this.history(agent)).ids.has(id) || [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => deliveryId(message) === id)
   }
   /** Delivers once to the selected inbox, or injects into history without waking the agent, and flushes Session persistence before acknowledging the producer. */
-  async send(agent: Agent, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, signal: AbortSignal, authorize?: () => void,
-    accepted?: () => void): Promise<void> {
+  async send(agent: Agent, requestId: string, content: string | DeliveryContent, mode: 'queue' | 'steer' | { inject: string }, signal: AbortSignal,
+    authorize?: () => void, accepted?: () => void): Promise<void> {
+    const text = typeof content === 'string' ? content : content.text
+    const images = typeof content === 'string' ? [] : content.images ?? []
     signal.throwIfAborted()
     const seen = await this.history(agent)
     signal.throwIfAborted()
@@ -75,7 +80,9 @@ export class AgentDelivery {
     if (!seen.ids.has(id) && !pending) {
       const source = typeof mode === 'object' ? { kind: 'dsh-superagent' as const, form: 'notice' as const, summary: mode.inject }
         : { kind: 'dsh-superagent' as const, form: 'relay' as const }
-      const message = freezeMessage({ id, role: 'user' as const, content: [{ type: 'text' as const, text }], source })
+      // A person's image reaches the Session as an attachment block beside the card, so it sees what was sent.
+      const blocks = [{ type: 'text' as const, text }, ...images.map(attachment => ({ type: 'image' as const, attachment }))]
+      const message = freezeMessage({ id, role: 'user' as const, content: blocks, source })
       if (typeof mode === 'object') { agent.inject(message); seen.ids.add(id) }
       else if (mode === 'steer') agent.steer(message)
       else agent.followup(message)

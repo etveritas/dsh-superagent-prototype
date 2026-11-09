@@ -87,11 +87,19 @@ export const EvalConfigSchema = z.object({
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
-/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/** A branch name for the Tickets that did not start on a pull or merge request; empty means not configured. */
+export const BranchNameSchema = z.string().trim().max(200)
+  .refine(branch => branch === '' || /^[A-Za-z0-9._\/-]+$/.test(branch), 'A branch name, or empty')
+/** A repository or project path such as `owner/name`; empty means not configured. */
+export const ProjectPathSchema = z.string().trim().max(200)
+  .refine(path => path === '' || /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(path), 'A project path such as owner/name, or empty')
+/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), the default repository and base branch for Tickets without a repository Source, `prepare` command, and blocked commands. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+  repository: ProjectPathSchema.default(''),
+  baseBranch: BranchNameSchema.default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()

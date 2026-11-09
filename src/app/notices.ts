@@ -43,7 +43,8 @@ export const subscriptionNotice = (thread: string, at?: string): Notice => [`sub
 
 /**
  * Converts an unsolicited domain event into a main-Session notice (`ticket.ended`, `trigger.requeued`, or
- * `thread.unsubscribed` by a person or executor); returns `undefined` for events that require no notice.
+ * `thread.unsubscribed` by a person or executor); returns `undefined` for events that require no notice, including the
+ * chat Threads a ticket drops as it ends or a new Subscription claims.
  */
 export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket | undefined = () => undefined): Notice | undefined {
   const { at } = event
@@ -57,6 +58,8 @@ export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket |
     return receiptNotice({ trigger_requeued: id, read: `trigger/${id}`, at }, `Trigger ${id} queued for a fresh assessment`)
   }
   if (event.type === 'thread.unsubscribed' && event.data.by === 'person') return subscriptionNotice(event.data.threadKey, at)
+  // A ticket's own chat Threads drop silently as it ends; its end is the notice.
+  if (event.type === 'thread.unsubscribed' && event.data.by === 'ticket') return undefined
   if (event.type === 'thread.unsubscribed') {
     const { ticketId, threadKey: thread, reason } = event.data
     const note = 'Its Executor found this thread unrelated after reading it; attach later triggers there to this ticket only when they '

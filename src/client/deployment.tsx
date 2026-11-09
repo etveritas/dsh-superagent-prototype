@@ -55,6 +55,10 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
   </Field>
   const feishu = accounts?.feishu ? accounts.feishu.name || accounts.feishu.botId
     : setup.feishuProblem ? setupText(t, setup.feishuProblem) : t('deploymentFeishuNone')
+  const gitlab = accounts?.gitlab ? `@${accounts.gitlab.login} @ ${accounts.gitlab.host}`
+    : setup.gitlabProblem ? setupText(t, setup.gitlabProblem) : t('deploymentGitlabNone')
+  const pingcode = accounts?.pingcode ? `@${accounts.pingcode.login} · ${accounts.pingcode.projects.join(', ')}`
+    : setup.pingcodeProblem ? setupText(t, setup.pingcodeProblem) : t('deploymentPingcodeNone')
   return <form className="dt-form" onSubmit={event => { void draft.submit(event) }}>
     <Fields disabled={draft.busy}>
       <Hint>{t('deploymentIntro')}</Hint>
@@ -63,7 +67,8 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
       </div>}
       {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
         <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
-          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
+          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu],
+          [t('deploymentGitlab'), gitlab], [t('deploymentPingcode'), pingcode]]} />
         <Hint>{t('deploymentAccountsWhere')}</Hint>
       </Section>}
       <Section title={t('deploymentMachine')}>

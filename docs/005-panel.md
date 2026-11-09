@@ -18,7 +18,7 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 | --- | --- |
 | Overview | Tickets needing action, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
 | Source | Source state, setup problems and non-zero counts. Filtered Triggers and dropped messages cover the same 24-hour window as Overview |
-| Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
+| Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions; a Ticket's Subscription can be dropped alone, or every Subscription at once |
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
 | Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
@@ -33,9 +33,9 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 
 ## Settings groups
 
-- **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.
+- **Sources:** one card per Source with its switch, fields and verified account facts. A Source whose account is obtained by scanning a code, such as WeChat, also shows its **扫码登录** button: the card shows the code, the phone confirms it, and the account is saved and dsh-superagent restarts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI; GitLab for new Issues, new merge requests and comments; PingCode for new work items and comments. Polling and read limits are under Advanced. Each card folds to its header; its switch and any setup problem stay visible.
 - **Eval:** the Policy version and rules, followed by **On each Source** and the Eval settings. Each Source tab contains its allowed list, membership sync, admission table and bot list. Sync runs at startup and on **Sync now**. The admission table distinguishes receiving scope, sender membership and whether the message addresses the agent. Eval settings select the accept mode, timeout and assessment model.
-- **Execution:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
+- **Execution:** worker model, concurrency, default repository and base branch for Tickets that start outside a repository Source, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
 - **Prompts:** **Edit** changes team sections, built-in parts and skills. **Full prompt** shows the assembled text and compares it with saved text or defaults. **History** lists versions. Edited built-in parts are marked changed and can be reset; templates list their required placeholders.
 
   An upgrade that changes an overridden default marks it **Default updated** (默认内容已更新). The panel compares the old and new defaults above the team's text. If the old default was not recorded, it compares the team's text with the new default instead. Choose **Keep my text** or **Use the new default**. Overrides for removed parts are listed below the tab bar and dropped on the next save.

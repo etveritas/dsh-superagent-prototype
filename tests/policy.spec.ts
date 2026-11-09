@@ -241,7 +241,7 @@ describe('settings migration', () => {
       rules: [{ id: 'visual', name: 'V', enabled: true, instruction: 'x' }],
       sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: CHAT, admission: {} }, github: { allowed: [{ id: 'alice' }, { id: 'carol' }], admission: {} } },
     })
-    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [] } })
+    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', repository: '', baseBranch: '', prepare: '', blockedCommands: [] } })
     expect(saved.sources.feishu).toEqual({ enabled: true, config: { chats: [], directMessages: true } })
     expect(SettingsSchema.parse(migrateSettings(saved))).toEqual(saved)
     expect(SettingsSchema.parse(migrateSettings({ executor: { maxWorkers: 2, paused: true } }))).toMatchObject({ paused: true, executor: { maxWorkers: 2 } })
@@ -254,7 +254,7 @@ describe('settings migration', () => {
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
+      executor: { model: null, maxWorkers: 5, directory: '', repository: '', baseBranch: '', prepare: '', blockedCommands: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })

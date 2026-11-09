@@ -211,7 +211,7 @@ export class Tickets extends EnginePart {
    * followed the Thread follows it no more, so its close no longer ends the ticket. Each ticket keeps deciding the messages
    * it received from the Thread.
    */
-  dropSubscriptions(thread: string, by: 'person' | 'executor', ticketId?: string, reason?: string): boolean {
+  dropSubscriptions(thread: string, by: 'person' | 'executor' | 'ticket', ticketId?: string, reason?: string): boolean {
     const current = this.repo.threads.get(thread)
     const tickets = current?.subscriptions.filter(id => ticketId === undefined || id === ticketId) ?? []
     if (!current || !tickets.length) return false
@@ -358,6 +358,12 @@ export class Tickets extends EnginePart {
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
+    // A chat Thread follows live work: when another Ticket still follows it, this Ticket stops following it as it ends.
+    for (const thread of this.repo.threads.list()) {
+      if (thread.subscriptions.length > 1 && thread.subscriptions.includes(ticketId) && this.options.chatThread?.(thread.key)) {
+        this.dropSubscriptions(thread.key, 'ticket', ticketId)
+      }
+    }
     this.emit('ticket.ended', { ticketId, by, outcome, ...why })
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
   }
@@ -416,8 +422,18 @@ export class Tickets extends EnginePart {
   /** Subscribe a ticket to a Thread; later Triggers on it reach the ticket as Inputs, as the ticket's own once it was for context. */
   private subscribe(ticketId: string, ref: ThreadRef): void {
     const thread = this.thread(ref)
-    if (!thread.subscriptions.includes(ticketId)) { thread.subscriptions.push(ticketId); this.emit('thread.subscribed', { threadKey: thread.key, ticketId }) }
+    const added = !thread.subscriptions.includes(ticketId)
+    if (added) thread.subscriptions.push(ticketId)
     if (thread.context?.includes(ticketId)) thread.context = thread.context.filter(id => id !== ticketId)
     this.repo.threads.save(thread)
+    if (!added) return
+    this.emit('thread.subscribed', { threadKey: thread.key, ticketId })
+    // A chat Thread belongs to live work: a new Subscription drops the ended Tickets that still followed it.
+    if (!this.options.chatThread?.(thread.key)) return
+    for (const id of [...thread.subscriptions]) {
+      if (id === ticketId) continue
+      const ticket = this.repo.tickets.get(id)
+      if (ticket && !liveTicket(ticket)) this.dropSubscriptions(thread.key, 'ticket', id)
+    }
   }
 }

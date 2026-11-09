@@ -1,14 +1,14 @@
 /** Shared list rows for Tickets, Threads, and Decisions, plus Source fact chips and automated-message run folding. */
 import { useState } from 'react'
-import type { DecisionRow, ThreadFacts, ThreadRow, TicketRow } from './api.ts'
+import type { Actor, DecisionRow, ThreadFacts, ThreadRow, TicketRow } from './api.ts'
 import { Icon, Tag } from './controls.tsx'
 import { decisionMark, threadMark, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
 import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
 
-export function TicketLine({ ticket, question, onChanged, context }: {
-  ticket: TicketRow; question?: boolean; onChanged?: () => Promise<void>; context?: boolean
+export function TicketLine({ ticket, question, onChanged, onUnsubscribe, context }: {
+  ticket: TicketRow; question?: boolean; onChanged?: () => Promise<void>; onUnsubscribe?: () => Promise<unknown>; context?: boolean
 }) {
   const { t, call, navigate } = usePanel()
   const status = ticketMark(t, ticket)
@@ -38,7 +38,10 @@ export function TicketLine({ ticket, question, onChanged, context }: {
         {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
           message={t('stopConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
-      </>}</div>
+      </>}
+      {onUnsubscribe && <ConfirmButton variant="outline" icon="unsubscribe" label={t('unsubscribeTicket')}
+        title={t('unsubscribeTicketTitle')} message={t('unsubscribeTicketConfirm', { title: ticket.title })}
+        onConfirm={onUnsubscribe} />}</div>
     </div>
   </li>
 }
@@ -75,6 +78,13 @@ export function ThreadLine({ thread, ticketId, context }: { thread: ThreadRow; t
   </li>
 }
 
+/** A sender's name with the id its Source knows it by, so one the panel cannot name can still be recognised and listed. */
+export function Sender({ actor }: { actor: Actor }) {
+  const { t } = usePanel()
+  const name = actorName(t, actor)
+  return <>{name}{actor.id && actor.id !== name && <span className="dt-mono dt-sender-id">{actor.id}</span>}</>
+}
+
 export function DecisionLine({ decision }: { decision: DecisionRow }) {
   const { t, navigate } = usePanel()
   const matched = decision.rules.filter(rule => rule.matched).map(rule => rule.name)
@@ -91,7 +101,11 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
           {decision.ticketTitle ?? (decision.threadTitle ? readableMarkers(t, decision.threadTitle) : preview || t('empty'))}
         </button>
       </div>
-      <div className="dt-row-quote dt-line">{preview}</div>
+      <div className="dt-row-quote dt-line">
+        {decision.actors.length > 0 && <span className="dt-senders">{decision.actors.map((actor, index) => <span
+          key={`${actor.source}:${actor.id}`}>{index > 0 && t('listSeparator')}<Sender actor={actor} /></span>)}{t('labelSeparator')}</span>}
+        {preview}
+      </div>
       <div className="dt-row-meta dt-line">
         {reason && <span className="dt-line-text">{reason}</span>}
         {matched.length > 0 && <LabelValue label={t('ruleLabel')} value={matched.join(t('listSeparator'))} />}

@@ -15,6 +15,7 @@ import { KV } from '../kv.ts'
 import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { z } from 'zod'
+import { BranchNameSchema } from '../policy.ts'
 
 export { commentTrigger, type GithubComment } from './github-trigger.ts'
 /** A notification of the agent account; `subject.url` is the API address of its Issue or PR. */
@@ -22,7 +23,8 @@ const NotificationSchema = z.looseObject({
   repository: z.looseObject({ full_name: z.string() }), subject: z.looseObject({ url: z.string().nullish() }),
 })
 
-const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
+const GithubConfigSchema = GithubAccountsSchema.extend({ baseBranch: BranchNameSchema.default(''),
+  pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   observeIssues: z.boolean().default(false), observePulls: z.boolean().default(false), observeComments: z.boolean().default(false),
   observeCi: z.boolean().default(false) }).strict()
@@ -43,6 +45,8 @@ export const githubKind: SourceKind<GithubConfig> = {
   fields: [
     { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
       hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
+    { key: 'baseBranch', type: 'text', label: { zh: '基线分支', en: 'Base branch' },
+      hint: { zh: '不是 PR 的工单从这个分支开始；留空时用执行器的默认基线分支。PR 工单始终检出 PR 的 head。', en: 'Tickets that are not pull requests start from this branch; empty uses the Executor\'s default base branch. A pull request ticket always checks out its head.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
@@ -91,20 +95,21 @@ export const githubKind: SourceKind<GithubConfig> = {
   },
   environment: {
     variables: [
-      { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '这个来源监听的仓库，owner/name。智能体在这里开的 PR，分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The repository this Source watches, as owner/name. A PR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', role: 'repository', description: { zh: '这个来源监听的仓库，owner/name。智能体在这里开的 PR，分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The repository this Source watches, as owner/name. A PR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
       { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的 GitHub 账号；gh 以它登录，除自动合并外的 GitHub 操作都用 gh，不用其他账号或凭据', en: 'The agent\'s GitHub account. gh is signed in to it; use gh for every GitHub operation except auto-merge, and never another account or credential' } },
       { key: 'DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱。这里的 git 没有身份：按提示词写明的作者提交，没有写明时用智能体账号和这个邮箱', en: 'Commit email of the agent\'s account. git has no identity here: commit as the author these instructions name, or as the agent\'s account with this email when they name none' } },
       { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '接下工单的 Issue 或 PR 编号；工单不是从 GitHub 来的时为空', en: 'Number of the Issue or PR that started the ticket; empty when the ticket did not start on GitHub' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '接下工单的 PR 的 head 引用 refs/pull/<编号>/head；不是 PR 时为空', en: 'Head ref refs/pull/<number>/head of the PR that started the ticket; empty when it was not a PR' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', role: 'head', description: { zh: '接下工单的 PR 的 head 引用 refs/pull/<编号>/head；不是 PR 时为空', en: 'Head ref refs/pull/<number>/head of the PR that started the ticket; empty when it was not a PR' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_BASE_BRANCH', role: 'base', description: { zh: '不是 PR 的工单从这个分支开始；未配置基线分支时为空', en: 'The branch Tickets that are not pull requests start from; empty when no base branch is configured' } },
     ],
-    values: ({ deployment, trigger }) => {
+    values: ({ deployment, config, trigger }) => {
       const number = trigger?.threads[0]?.source === SOURCE ? Number(trigger.meta.number) || 0 : 0
-      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
-        DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
+      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github?.login ?? '', DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github?.noreply ?? '', DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
+        DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '', DSH_SUPERAGENT_GITHUB_BASE_BRANCH: config.baseBranch }
     },
   },
   facts: (deployment): Record<string, Localized | string> => deployment ? {
-    cli: { zh: `当前账号 @${deployment.github.login}`, en: `Current account @${deployment.github.login}` },
+    cli: { zh: `当前账号 @${deployment.github?.login ?? ''}`, en: `Current account @${deployment.github?.login ?? ''}` },
   } : {},
 }
 export const name = 'dsh-superagent-github'
@@ -218,7 +223,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
   }
   const { headers, body } = included(raw)
   const items = validItems(ListedSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
-  const { login } = ctx.deployment.github
+  const { login } = ctx.commands.githubAccount
   const fresh = (at: string | null | undefined, kind: string) =>
     kind in started && Date.parse(at ?? '') >= Math.max(Date.parse(started[kind]!), horizon)
   for (const item of items) {
@@ -351,7 +356,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
     if (!isPr) {
       // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
-      const { login } = ctx.deployment.github
+      const { login } = ctx.commands.githubAccount
       const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
       if (opened) await ctx.receive(issueTrigger(issue, login))
       await intakeComments(ctx, { number, isPr: false, url: issue.html_url }, since, round)
@@ -361,7 +366,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
   if (isPr) {
     const pr = await pull(ctx, round, number)
     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
-    const { login } = ctx.deployment.github
+    const { login } = ctx.commands.githubAccount
     if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
       const opened = { number, title: pr.title ?? '', body: pr.body, user: pr.user, created_at: pr.created_at, html_url: pr.html_url }
       await ctx.receive(pullTrigger(opened, login))
@@ -383,7 +388,7 @@ function pull(ctx: SourceContext, round: Round, number: number): Promise<Pull> {
 }
 async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, round: Round): Promise<void> {
   const commands = ctx.commands.withSignal(round.signal)
-  const { login } = ctx.deployment.github
+  const { login } = ctx.commands.githubAccount
   const kinds = ref.isPr ? ['conversation', 'inline', 'review'] as const : ['conversation'] as const
   for (const kind of kinds) {
     const suffix = `&since=${encodeURIComponent(since)}`

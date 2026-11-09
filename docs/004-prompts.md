@@ -13,7 +13,7 @@ A team can edit three team sections, add skills, and override every built-in sys
 | Delivery requirements | Evidence in pull requests, the auto-merge condition with its line threshold, and the commit author; without one, the Executor commits as the agent account's no-reply address |
 | Team skills | Knowledge the agents load when they need it, such as an `identities` skill that says which Feishu user is which GitHub account |
 
-The built-in text covers the roles, tool usage, host mechanics, authorization rules, and the GitHub and Feishu skills. It refers to the team sections by their headings instead of repeating them.
+The built-in text covers the roles, tool usage, host mechanics, authorization rules, and the GitHub, GitLab, Feishu and PingCode skills. It refers to the team sections by their headings instead of repeating them.
 
 ### Built-in parts and templates
 
@@ -24,7 +24,7 @@ Overrides use these keys:
 | Shared instructions and roles | `runtime/shared`, `runtime/orchestrator`, `runtime/worker` |
 | Working instructions | `runtime/subscriptions`, `runtime/replies`, `runtime/dispatch`, `runtime/work`, `runtime/admission` |
 | Handoff instructions | `runtime/handoff/orchestrator`, `runtime/handoff/worker` |
-| Source skills | `skill/feishu`, `skill/github` |
+| Source skills | `skill/feishu`, `skill/github`, `skill/gitlab`, `skill/pingcode` |
 | Generated sections | `runtime/environment`, `runtime/policy`, `runtime/policy/none` |
 
 The generated sections are editable templates. They must retain these placeholders:

@@ -103,6 +103,14 @@ export function ExecutionSettings() {
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>
+          <Field label={t('defaultRepository')} hint={t('defaultRepositoryHint')}>
+            <Input className="dt-mono" value={value.repository} placeholder={t('none')} spellCheck={false}
+              onChange={event => edit({ repository: event.target.value })} />
+          </Field>
+          <Field label={t('defaultBaseBranch')} hint={t('defaultBaseBranchHint')}>
+            <Input className="dt-mono" value={value.baseBranch} placeholder={t('none')} spellCheck={false}
+              onChange={event => edit({ baseBranch: event.target.value })} />
+          </Field>
           <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
             : t('executionDirectoryDefault', { root: environment.root })}>
             <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"

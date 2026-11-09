@@ -15,6 +15,7 @@ import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
+import type { LoginView } from '../sources/kind.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Sessions } from './sessions.ts'
 import type { Store } from './store.ts'
@@ -35,7 +36,7 @@ export interface HttpHost {
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
-  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+  readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels' | 'block'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
@@ -47,6 +48,8 @@ export interface HttpHost {
   readonly deployment: Deployment
   readonly setupProblem?: SetupProblem | undefined
   readonly feishuProblem?: SetupProblem | undefined
+  readonly gitlabProblem?: SetupProblem | undefined
+  readonly pingcodeProblem?: SetupProblem | undefined
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
@@ -98,7 +101,13 @@ function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    gitlabProblem: runtime.gitlabProblem ?? null,
+    pingcodeProblem: runtime.pingcodeProblem ?? null,
+    accounts: resolved ? { repository: resolved.repository, agent: resolved.github?.login ?? '',
+      feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null,
+      gitlab: resolved.gitlab ? { host: resolved.gitlab.host, login: resolved.gitlab.login } : null,
+      pingcode: resolved.pingcode ? { skill: resolved.pingcode.skill, login: resolved.pingcode.login,
+        projects: resolved.pingcode.projects.map(project => project.identifier || project.name) } : null } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -110,8 +119,17 @@ export function stateView(runtime: HttpHost) {
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
+  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem, gitlabProblem: runtime.gitlabProblem,
+  pingcodeProblem: runtime.pingcodeProblem })
 export type StateView = ReturnType<typeof stateView>
+/** Panel-facing login state of one Source; the token is never part of it, only the status, the code, and its own sentence. */
+export interface LoginPageView {
+  status: LoginView['status']
+  svg?: string
+  message?: string
+  /** Set when the saved credentials changed a setup-read field, so dsh-superagent restarts and the Source starts. */
+  restarting?: boolean
+}
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
@@ -140,6 +158,7 @@ const limit = (fallback: number, max: number) => z.coerce.number().int().positiv
 const TicketsQuery = z.object({ state: z.enum(TICKET_FILTERS).catch('open'), offset, limit: limit(20, 1000) })
 const ThreadsQuery = z.object({ filter: z.enum(THREAD_FILTERS).catch('subscribed'), offset, limit: limit(20, 1000) })
 const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optional(), around: z.string().optional() })
+const UnsubscribeQuery = z.object({ ticket_id: z.string().min(1).optional() })
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
 const count = z.coerce.number().int().nonnegative()
@@ -147,19 +166,60 @@ const PromptsQuery = z.object({ revision: count.optional(), offset: count.defaul
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
+const LoginRequest = z.object({ code: z.string().optional() })
+/**
+ * Reads the login POST body; a start request may carry none at all, which `readBody` reports as invalid JSON.
+ * A malformed body reads the same way and starts the login, while a body over the size limit still fails.
+ */
+async function loginBody(read: () => Promise<unknown>): Promise<{ code?: string }> {
+  try {
+    const { code } = LoginRequest.parse(await read())
+    return code?.trim() ? { code: code.trim() } : {}
+  } catch (error) {
+    if (error instanceof RouteError && error.message === 'The request body is not JSON') return {}
+    throw error
+  }
+}
 
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
+  const loginOf = (id: string) => {
+    const login = runtime.sources.kind(id)?.login
+    if (!login) throw new RouteError(404, 'This Source has no login')
+    return login
+  }
+  /**
+   * Turns one login view into the panel's answer; a confirmed login saves its credentials as the Source's configuration,
+   * which reruns setup and starts the Source. The credentials themselves never leave the host.
+   */
+  const finished = async (id: string, view: LoginView): Promise<LoginPageView> => {
+    if (view.status !== 'confirmed' || !view.credentials) {
+      return { status: view.status, ...view.svg ? { svg: view.svg } : {}, ...view.message ? { message: view.message } : {} }
+    }
+    const instance = runtime.sources.instance(id)
+    if (!instance) throw new RouteError(404, 'Source not found')
+    const block = runtime.settings.block(`source:${id}`)
+    const saved = await runtime.settings.save(`source:${id}`, { enabled: instance.enabled,
+      config: { ...instance.config, ...view.credentials } }, block.revision, 'panel')
+    return { status: 'confirmed', restarting: saved.restarting }
+  }
   return {
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
-      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
+      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.gitlabProblem ?? runtime.pingcodeProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
+    'POST sources/:id/login': async input => {
+      const { id } = input.params
+      const login = loginOf(id)
+      const { code } = await loginBody(input.body)
+      return finished(id, code && login.verify ? await login.verify(code) : await login.start())
+    },
+    'GET sources/:id/login': async ({ params }) => finished(params.id, await loginOf(params.id).wait()),
     'GET threads': ({ query }) => {
       const { filter, offset, limit } = ThreadsQuery.parse(query)
       return threadList(views(runtime), filter, offset, limit)
@@ -170,9 +230,11 @@ function routes(runtime: HttpHost): Routes {
       if (!detail) throw new RouteError(404, 'Thread not found')
       return detail
     },
-    'POST threads/:key/unsubscribe': async ({ params }) => {
-      const removed = runtime.engine.unsubscribe(params.key)
-      return { removed, thread: params.key, context_delivery: await runtime.sessions.delivery(`subscription:${params.key}`) }
+    'POST threads/:key/unsubscribe': async ({ params, query }) => {
+      const { ticket_id: ticketId } = UnsubscribeQuery.parse(query)
+      const removed = runtime.engine.unsubscribe(params.key, ticketId)
+      return { removed, thread: params.key, ...(ticketId ? { ticket_id: ticketId } : {}),
+        context_delivery: await runtime.sessions.delivery(`subscription:${params.key}`) }
     },
     'POST triggers/:id/requeue': ({ params }) => {
       const queued = runtime.engine.reevaluate(params.id)

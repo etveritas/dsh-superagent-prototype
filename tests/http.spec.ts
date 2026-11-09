@@ -67,6 +67,17 @@ it('decodes path parameters and parses each route\'s query', async () => {
   expect(seen).toEqual(['feishu:oc_1:om/root', { filter: { kinds: ['accept', 'reopen'], since: expect.any(String) }, offset: 0, limit: 200 }])
 })
 
+it('unsubscribes only the ticket named by ticket_id', async () => {
+  const seen: unknown[] = []
+  const call = serve({
+    engine: { unsubscribe: (key: string, ticketId?: string) => { seen.push([key, ticketId]); return true } },
+    sessions: { delivery: async () => 'injected' },
+  })
+  expect(await call('POST', `threads/${encodeURIComponent('feishu:oc_1:om/root')}/unsubscribe?ticket_id=t1`))
+    .toMatchObject({ status: 200, body: { removed: true, ticket_id: 't1', context_delivery: 'injected' } })
+  expect(seen).toEqual([['feishu:oc_1:om/root', 't1']])
+})
+
 it('answers only a same-origin request from the panel on the loopback address', async () => {
   const call = serve({ sessions: { delivery: async () => 'injected' }, engine: { unsubscribe: () => true } })
   const post = (headers: Headers) => call('POST', 'threads/github%3A1/unsubscribe', undefined, headers)
@@ -95,4 +106,51 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('starts a Source login, polls it, and verifies the code it asks for', async () => {
+  const calls: string[] = []
+  const svg = '<svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'
+  const login = {
+    label: { zh: '扫码登录', en: 'Log in by scanning' },
+    start: async () => { calls.push('start'); return { status: 'wait', svg } },
+    wait: async () => { calls.push('wait'); return { status: 'scaned', svg } },
+    verify: async (code: string) => { calls.push(`verify:${code}`); return { status: 'need_verifycode', svg } },
+  }
+  const call = serve({
+    sources: { kind: (id: string) => id === 'weixin' ? { kind: 'weixin', login } : undefined,
+      instance: (id: string) => id === 'weixin' ? { id, kind: id, enabled: true, config: { token: '' } } : undefined },
+    settings: { block: (block: string) => ({ block, revision: 3, value: {} }),
+      save: async () => { throw new Error('a login that is not confirmed saves nothing') } },
+  })
+  // A start request may carry no body at all, and its answer is the code view without any long poll.
+  expect(await call('POST', 'sources/weixin/login')).toEqual({ status: 200, body: { status: 'wait', svg } })
+  expect(await call('POST', 'sources/weixin/login', '')).toEqual({ status: 200, body: { status: 'wait', svg } })
+  expect(await call('GET', 'sources/weixin/login')).toEqual({ status: 200, body: { status: 'scaned', svg } })
+  // A body with a code is the phone's code, which `verify` stores for the next poll.
+  expect(await call('POST', 'sources/weixin/login', { code: '1234' })).toEqual({ status: 200, body: { status: 'need_verifycode', svg } })
+  expect(calls).toEqual(['start', 'start', 'wait', 'verify:1234'])
+})
+
+it('saves the credentials of a confirmed login as the Source configuration', async () => {
+  const saves: unknown[] = []
+  const login = { label: { zh: '扫码登录', en: 'Log in by scanning' },
+    wait: async () => ({ status: 'confirmed', credentials: { token: 'bot-secret', baseUrl: 'https://api.test' } }) }
+  const call = serve({
+    sources: { kind: () => ({ kind: 'weixin', login }),
+      instance: () => ({ id: 'weixin', kind: 'weixin', enabled: false, config: { token: '', baseUrl: '', botAgent: 'tag' } }) },
+    settings: { block: (block: string) => ({ block, revision: 7, value: {} }),
+      save: async (...args: unknown[]) => { saves.push(args); return { saved: true, revision: 8, policy_changed: false,
+        restarting: true, context_delivery: 'pending' } } },
+  })
+  // Only the status and whether the panel restarts leaves the host; the bot token is saved, never returned.
+  expect(await call('GET', 'sources/weixin/login')).toEqual({ status: 200, body: { status: 'confirmed', restarting: true } })
+  expect(saves).toEqual([['source:weixin', { enabled: false,
+    config: { token: 'bot-secret', baseUrl: 'https://api.test', botAgent: 'tag' } }, 7, 'panel']])
+})
+
+it('answers 404 for a login no Source offers', async () => {
+  const call = serve({ sources: { kind: (id: string) => id === 'github' ? { kind: 'github' } : undefined } })
+  expect(await call('POST', 'sources/github/login')).toEqual({ status: 404, body: { error: 'This Source has no login' } })
+  expect(await call('GET', 'sources/missing/login')).toEqual({ status: 404, body: { error: 'This Source has no login' } })
 })

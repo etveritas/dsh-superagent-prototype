@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
+import { checkedImText } from '../infra/text.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
 import { feishuThreadContext } from './feishu-read.ts'
 import { refreshChatNames, runFeishu } from './feishu-loops.ts'
@@ -30,6 +31,7 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
+  chat: true,
   refreshLabels: (host, signal) => refreshChatNames(sourceContext(host, feishuKind), signal),
   title: { zh: '飞书', en: 'Feishu' },
   description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
@@ -61,7 +63,7 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   channel: {
     allowed: (address, config) =>
       feishuKind.scope!({ meta: { chatId: address.chatId ?? '', direct: address.direct === 'true' } }, config).listened,
-    send: sendFeishu, link: feishuLink,
+    check: message => { checkedImText(message.text) }, send: sendFeishu, link: feishuLink,
   },
   threadContext: feishuThreadContext,
   find: query => ({ threads: [], terms: [...new Set(query.match(/om_[A-Za-z0-9_-]+/g) ?? [])] }),

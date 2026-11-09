@@ -34,7 +34,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub', 'GitLab'])
   await addUser()
   expect(text()).toContain(zh.draftKept)
   await remount()
@@ -162,6 +162,7 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
   await click(tab(zh['tab.settings']))
   // The GitHub Source receives only what is addressed to the agent until a switch opens a scope of the repository.
   const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
+  await click(github.querySelector<HTMLButtonElement>('.dt-card-toggle')!)
   expect([...github.querySelectorAll('.dt-switch-row')].map(row => row.textContent)).toEqual(['接收仓库里的新 Issue', '接收仓库里的新 PR',
     '接收仓库里的评论', '接收默认分支的 CI'])
   expect([...github.querySelectorAll('[role="switch"]')].slice(1).map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false',
@@ -196,6 +197,7 @@ it('shows the GitHub Source\'s switches for what it receives across the reposito
   await mount(en)
   await click(tab(en['tab.settings']))
   const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
+  await click(github.querySelector<HTMLButtonElement>('.dt-card-toggle')!)
   expect([...github.querySelectorAll('.dt-switch-row')].map(row => [row.textContent, row.querySelector('[role="switch"]')
     ?.getAttribute('aria-checked')])).toEqual([['Receive new Issues in the repository', 'true'],
     ['Receive new pull requests in the repository', 'false'], ['Receive comments in the repository', 'false'],

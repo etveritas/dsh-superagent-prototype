@@ -28,7 +28,7 @@ import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
 import { IM_WORDS } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
-import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
+import { WORKER_SHELL, credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { preview, readable } from '../src/app/views/text.ts'
@@ -36,6 +36,9 @@ import { decisionList, search, threadDetail, threadList } from '../src/app/views
 import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
 
 let runtime: Runtime
+// The tests may run inside a DSH worker, which already exports these; stopping the runtime must put back what it found
+// rather than assume the variables were unset.
+const ambient = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL }
 const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
 const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
 let directory: string
@@ -75,6 +78,8 @@ async function receive(trigger: Trigger, target = runtime) {
   return result
 }
 let services: Record<string, unknown>
+/** DSH's managed shell environment registry, which the Runtime registers the agent git-configuration marker with. */
+let shellEnv: { register: ReturnType<typeof vi.fn> }
 /** DSH's job registry the Runtime's Executor reads its workers' shell jobs from. */
 let jobs: ReturnType<typeof jobRegistry>
 /** What worker commands of the startup checks print, by argv; an Error makes the command fail with its message. */
@@ -94,12 +99,12 @@ const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
   return { done: Promise.resolve({ exitCode: answer instanceof Error ? 1 : 0, signal: null }), collected: { stdout: reader(answer instanceof Error ? '' : answer), stderr: reader(answer instanceof Error ? answer.message : '') } }
 }) }
 /** Source account overrides for test setup; `feishu: null` disables the Feishu source. */
-interface Accounts { github?: Record<string, unknown>; feishu?: Record<string, unknown> | null }
+interface Accounts { github?: Record<string, unknown> | null; feishu?: Record<string, unknown> | null }
 function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
   const { feishu: _feishu, ...others } = settings.sources
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
+  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: accounts.github !== null, config: accounts.github === null ? {} : { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
@@ -203,7 +208,8 @@ beforeEach(async () => {
     inspect: vi.fn(async () => ({ events: [] })),
   }
   jobs = jobRegistry()
-  services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
+  shellEnv = { register: vi.fn(() => () => {}) }
+  services = { agents, shellEnv, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
@@ -228,6 +234,13 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(Object.fromEntries(runtime.ticketEnvironment(ticket).map(variable => [variable.key, variable.value]))).toMatchObject({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_TICKET: ticket.id, DSH_SUPERAGENT_FEISHU_CHAT: CHAT, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_GITHUB_ACCOUNT: 'agent-bot', DSH_SUPERAGENT_GITHUB_NUMBER: '' })
   expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
   expect(sessionId).toBe(`worker-${ticket.id}`)
+  // An Executor Session takes the ticket directory as its cwd instead of registering a Workspace for it; the main Session
+  // is the only Workspace the bundle creates.
+  const workerCreate = controller.create.mock.calls.map(([request]) => request).find(request => request.sessionId === sessionId)!
+  expect(workerCreate).toMatchObject({ cwd: ticket.execution!.directory })
+  expect(workerCreate).not.toHaveProperty('workspaceId')
+  // The main Session anchors the bundle's only Workspace, at the state directory.
+  expect(controller.create.mock.calls.map(([request]) => request).find(request => request.sessionId === runtime.masterId)).toMatchObject({ workspaceId: directory })
   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
@@ -350,6 +363,21 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   expect(notice ?? runtime.store.replyStatus(key('pr-terminal', '42', 'feishu', JSON.stringify({ chatId: CHAT, messageId: 'om_1' }), 'merged'))).toBeTruthy()
 })
 
+it('sends one failure notice to the conversation a ticket started in, and only for a failed report', async () => {
+  const { ticket } = await acceptedTicket()
+  await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'failure', text: 'x' }))
+    .rejects.toThrow('A failure notice needs an open ticket whose latest report is failed')
+  await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'The prepare command failed: fatal: no such clone' })
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', state: 'failed' })
+  const failed = runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report!
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'failure', text: '这条请求没做成：执行环境准备失败，修好后我再试。' }))
+    .toEqual({ status: 'sent' })
+  expect(runtime.store.replyStatus(key('failure-reply', ticket.id, failed.at))).toBe('sent')
+  // The same failed report is already told: another wording keeps the first notice.
+  await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'failure', text: '换个说法' })
+  expect(runtime.store.receipts.get(key('failure-reply', ticket.id, failed.at))!.text).toBe('这条请求没做成：执行环境准备失败，修好后我再试。')
+})
+
 it('lists each ticket with the Threads it subscribes to, as their Sources describe them', async () => {
   const { sessionId, ticket } = await acceptedTicket()
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42 })
@@ -469,6 +497,26 @@ it('treats GitHub comments through the same gate: mentions by members are explic
   const ci = { ...stranger, id: 'ci-1', human: false, text: 'GitHub PR #7 CI: failing', meta: { ci: true } }
   await receive(ci)
   expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([expect.objectContaining({ triggerId: 'ci-1' })])
+})
+
+it('derives the repository and work ref for a prepare command from the origin PR head, the Source base branch or the Executor default', async () => {
+  const env = (ticketId: string) => Object.fromEntries(runtime.ticketEnvironment(runtime.store.tickets.get(ticketId)!).map(variable => [variable.key, variable.value]))
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, repository: 'acme/default', baseBranch: 'dev' },
+    sources: { ...settings.sources, github: { ...settings.sources.github!, config: { ...(settings.sources.github!.config as Record<string, unknown>), baseBranch: 'release' } } } })
+  // A chat Ticket: the GitHub Source names the repository, and its base branch serves Tickets without a pull request.
+  const chat = await acceptedTicket()
+  expect(env(chat.ticket.id)).toMatchObject({ DSH_SUPERAGENT_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_WORK_REF: 'refs/heads/release' })
+  // A pull request Ticket: its head ref wins over any base branch.
+  const mention = commentTrigger({ id: 3, body: '@agent-bot please fix', user: { login: 'alice' }, html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-3', created_at: '2026-09-09T00:02:00Z' },
+    { number: 7, isPr: true }, 'conversation', 'agent-bot')
+  await receive(mention)
+  const result = await route({ kind: 'accept', trigger_id: mention.id, title: 'Fix PR 7', worktree_name: 'fix-pr', acknowledgement: 'On it: fixing the review finding.' })
+  expect(env((result.ticket as { ticket_id: string }).ticket_id)).toMatchObject({ DSH_SUPERAGENT_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_WORK_REF: 'refs/pull/7/head' })
+  // Without a repository Source, the Executor's defaults fill in for a chat Ticket.
+  runtime.store.saveSettings({ ...runtime.store.settings(), sources: { ...runtime.store.settings().sources, github: { enabled: false, config: {} } } })
+  const fallback = await acceptedTicket(feishu('2', '@bot 再修一个回归'))
+  expect(env(fallback.ticket.id)).toMatchObject({ DSH_SUPERAGENT_REPOSITORY: 'acme/default', DSH_SUPERAGENT_WORK_REF: 'refs/heads/dev' })
 })
 
 it('relays an allowed sender\'s mention in a new Issue as an explicit candidate from the poll that reads its notification', async () => {
@@ -868,6 +916,14 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   expect(next.feishuProblem).toMatchObject({ place: 'feishu', code: 'feishuUserIdentity', values: { mode: 'off' } })
 })
 
+it('starts without a GitHub account when the GitHub Source is disabled', async () => {
+  const next = await restart({}, { github: null })
+  await next.ready
+  expect(next.configured()).toBe(true)
+  expect(next.deployment.github).toBeUndefined()
+  expect(next.deployment.feishu?.cli).toBe(BOT())
+})
+
 it('reports a failure to write the agent environment as environmentFailed and leaves this process\'s environment as it was', async () => {
   await runtime.stop()
   // The shim directory cannot be made: a file has its name.
@@ -966,19 +1022,20 @@ it('runs setup again while the Feishu bot check failed, and restores the process
   const broken = await restart()
   await broken.ready
   expect(broken.setupProblem).toMatchObject({ place: 'deployment', code: 'gitTooOld' })
-  expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+  expect(process.env.GIT_CONFIG_GLOBAL).toBe(ambient.GIT_CONFIG_GLOBAL)
   expect(process.env.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
 })
 
 it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {
   const bin = join(directory, 'worker-bin')
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'git', 'glab', 'lark-cli'])
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain(`exec '${BOT()}'`)
+  expect(readFileSync(join(bin, 'git'), 'utf8')).toContain(`if [ -z "$${WORKER_SHELL}" ]`)
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, blockedCommands: ['personal-gh'] } })
   const next = await restart({}, { feishu: null })
   await next.ready
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
-  expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'git', 'glab', 'lark-cli', 'personal-gh'])
+  expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh or glab')
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
   expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
@@ -986,8 +1043,21 @@ it('writes worker shims and the agent environment from the configuration only, a
   expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
   expect(process.env.PATH?.split(':')[0]).toBe(bin)
   await next.stop()
-  expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
+  expect(process.env.GIT_CONFIG_GLOBAL).toBe(ambient.GIT_CONFIG_GLOBAL)
   expect(process.env.PATH?.split(':')).not.toContain(bin)
+})
+
+it('marks the shell of an Executor Session and of its subagents for the agent git configuration, and no other shell', async () => {
+  const { sessionId } = await acceptedTicket()
+  await vi.waitFor(() => { expect(shellEnv.register).toHaveBeenCalledTimes(1) })
+  const contributor = shellEnv.register.mock.calls[0]![0] as { variables: Record<string, unknown>; resolve: (execution: { agent?: unknown }) => Record<string, unknown> }
+  expect(Object.keys(contributor.variables)).toEqual([WORKER_SHELL])
+  const shellOf = (agent: unknown) => contributor.resolve({ agent })
+  const session = (id: string, parentSession?: string) => ({ id, session: { header: { parentSession } } })
+  expect(shellOf(session(sessionId))).toEqual({ [WORKER_SHELL]: '1' })
+  expect(shellOf(session(runtime.masterId))).toEqual({})
+  // A subagent of the worker reaches it through its parent Session, which is loaded while the subagent runs.
+  expect(shellOf(session('subagent-1', sessionId))).toEqual({ [WORKER_SHELL]: '1' })
 })
 
 it('waits for setup when the shim directory holds a file dsh-superagent did not write, and leaves the file alone', async () => {
@@ -1004,9 +1074,9 @@ it('rewrites the blocked-command shims when the Executor settings change them, w
   const bin = join(directory, 'worker-bin')
   const save = (blockedCommands: string[]) => runtime.settings.save('executor', { ...runtime.store.settings().executor, blockedCommands }, runtime.store.blockRevision('executor'), 'panel')
   expect(await save(['personal-gh'])).toMatchObject({ saved: true, restarting: false })
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'git', 'glab', 'lark-cli', 'personal-gh'])
   await save([])
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  expect(readdirSync(bin).sort()).toEqual(['gh', 'git', 'glab', 'lark-cli'])
   // The commands workers need cannot be blocked.
   await expect(save(['gh'])).rejects.toThrow()
   expect(restarts).not.toHaveBeenCalled()
@@ -1216,7 +1286,7 @@ it('keeps the receipt of a message withdrawn while it went out, so its id is not
   expect([runtime.store.receipts.get('raced'), runtime.effects.pending('reply')]).toEqual([expect.objectContaining({ text: 'Done', status: 'sent' }), false])
 })
 
-it('resumes several ended tickets on one thread from one message without the launch waiting on itself', async () => {
+it('resumes only the last ended ticket on a shared chat thread without the launch waiting on itself', async () => {
   const first = await acceptedTicket()
   const other = feishu('30', '@bot 顺手把这里也改了', { root_id: undefined })
   await receive(other)
@@ -1227,9 +1297,13 @@ it('resumes several ended tickets on one thread from one message without the lau
   await runTool(first.sessionId, 'orchestrator_trigger_handback', { trigger_id: another.id, reason: 'Another change.' })
   const second = await acceptedTicket(another)
   for (const ticket of [first, second]) await runTool(ticket.sessionId, 'orchestrator_report', { state: 'dropped', summary: 'nothing to do' })
+  // The first end drops its chat subscription because the second still follows the thread; the last one keeps it to resume.
+  expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)!.subscriptions).toEqual([second.ticket.id])
   await receive(feishu('32', '还有问题', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' }))
-  await vi.waitFor(() => expect([first, second].map(ticket => runtime.store.tickets.get(ticket.ticket.id)!.ended)).toEqual([undefined, undefined]), { timeout: 3000 })
-  await vi.waitFor(() => expect([first, second].map(ticket => runtime.store.tickets.get(ticket.ticket.id)!.assignments.at(-1)!.state)).toEqual(['running', 'running']), { timeout: 3000 })
+  await vi.waitFor(() => expect(runtime.store.tickets.get(second.ticket.id)!.ended).toBeUndefined(), { timeout: 3000 })
+  await vi.waitFor(() => expect(runtime.store.tickets.get(second.ticket.id)!.assignments.at(-1)!.state).toEqual('running'), { timeout: 3000 })
+  expect(runtime.store.tickets.get(first.ticket.id)!.ended).toBeDefined()
+  expect(runtime.store.tickets.get(second.ticket.id)!.assignments).toHaveLength(2)
 })
 
 it('attaches a message to an ended ticket and so resumes it', async () => {
