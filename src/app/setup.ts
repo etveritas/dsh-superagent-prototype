@@ -108,7 +108,7 @@ export class Setup {
       return undefined
     })
     // A broken GitLab account pauses only the GitLab Source.
-    const gitlab = await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe).catch((error: unknown) => {
+    const gitlab = machine.personalGitlabHost ? undefined : await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.gitlabProblem = error.problem
       context.logger.warn('dsh-superagent leaves GitLab out: %s', error.message)

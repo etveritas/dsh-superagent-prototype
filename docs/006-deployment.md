@@ -354,3 +354,27 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | The log says the plugin is incompatible with the running dsh | Install a DeepSeek Harness version within the `engines.dsh` range |
 | The panel shows "Failed to load plugins" after a DeepSeek Harness upgrade | Restart the running instance |
 | Nothing happens after a mention | Check that the author is on the Source's allowed list, the Source is on, and processing is not paused. On GitHub, a mention added by editing an Issue's body is not received; mention the agent in a comment |
+
+### WeCom personal GitLab authorization
+
+Set `personalGitlabHost` to the GitLab HTTPS hostname (without the scheme) and
+`personalGitlabAdmins` to the WeCom user IDs allowed to register projects in the
+Super-agent entry's configuration. These IDs must also be on the WeCom sender
+allowlist. Leave the host unset to use the standard setup.
+
+In a direct conversation, ask the bot to bind a personal GitLab account and
+supply its access token. The GitLab instance may also accept username/password
+authorization. GitLab instances that disable the password grant require a
+token. The bot stores the resulting access token in the deployment's private
+state directory. Protect the state and conversation history. Expired tokens
+must be rebound. The provided credential can appear in the original conversation
+and its model history.
+
+An administrator with a bound account can ask the bot to add a project by
+HTTPS URL or namespace/project. A work request names the registered project in
+its first message. The worker uses the originator's bound account for supported
+GitLab API operations, including file and merge request reads, issue creation,
+commits and opening merge requests. GitLab checks that account's actual
+permissions. The configured mode disables the legacy GitLab source and
+restricts managed sessions to their registered tools, including disabling shell,
+local file tools and external subagents on the same profile.

@@ -32,6 +32,7 @@ export interface SessionsHost {
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
   readonly health: HealthEntry
   readonly masterId: string
+  readonly personalGitlab?: boolean
   readonly lifetime: AbortSignal
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
@@ -69,6 +70,10 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+const PERSONAL_GITLAB_INSTRUCTIONS = {
+  main: 'For explicit requests to bind a GitLab account or add a project, use orchestrator_gitlab_manage with the current WeCom trigger ID, including follow-ups. Ask for missing credentials in private. Never include credentials in a ticket, note, or reply. Handle setup separately from ticket work.',
+  worker: 'Use orchestrator_gitlab_work for the project named in the initial request. Do not make writes requested by a different person or disclose private repository contents in group replies. Hand back GitLab setup requests without quoting credentials.',
+}
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -278,7 +283,8 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const gitlab = host.personalGitlab ? PERSONAL_GITLAB_INSTRUCTIONS[master ? 'main' : 'worker'] : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}${gitlab ? '\n' + gitlab : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -291,11 +297,23 @@ export class Sessions {
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
-    for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
+    const tools = host.tools(agent, ticket)
+    for (const tool of tools) register(tool.name, tool.description, tool.schema, tool.execute)
+    if (host.personalGitlab) {
+      const allowed = new Set(tools.map(tool => tool.name))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: [] }),
+        agent.ctx.tools.guard(({ name }) => {
+          if (!allowed.has(name)) return 'This profile uses managed tools for personal GitLab access'
+          const current = ticket && host.store.tickets.get(ticket.id)
+          if (ticket && (!current || !liveTicket(current))) return 'Ticket ended; new work needs a new authorized ticket'
+          return undefined
+        }))
+    }
     if (master) {
+      if (host.personalGitlab) return
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
-    } else {
+    } else if (!host.personalGitlab) {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
       binding.disposers.push(...this.workOnly(agent, ticket!.id))
     }
@@ -322,7 +340,7 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
+    const allow = (this.host.personalGitlab ? [] : WORK_TOOLS).filter(name => agent.ctx.tools.get(name, parent))
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
@@ -341,7 +359,9 @@ export class Sessions {
     }
     const ticketId = parent === undefined ? undefined : ticketOfSession(parent)
     if (ticketId === undefined || !this.host.store.tickets.get(ticketId)) return
-    this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
+    const disposers = this.workOnly(agent, ticketId)
+    if (this.host.personalGitlab) disposers.push(agent.ctx.tools.guard(() => 'Subagents cannot access this profile’s personal GitLab tools'))
+    this.bindings.set(agent, { disposers, subagent: true })
   }
   /** Register the skills of a prompt version in the agent's skill scope, in place of an earlier version's. */
   private bindSkills(binding: SessionBinding, version: PromptVersion): void {

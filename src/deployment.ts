@@ -32,6 +32,8 @@ declare module '@deepseek-ai/cordis' {
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.')
     .description('Omitted, it is `state/superagent` under the DeepSeek Harness home.'),
+  personalGitlabHost: s.string().pattern(/^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/).description('HTTPS GitLab host for WeCom personal authorization.'),
+  personalGitlabAdmins: s.array(s.string()).default([]).description('WeCom user IDs allowed to register GitLab projects.'),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -42,6 +44,8 @@ export const Config = s.object({
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
   stateDir: string
+  personalGitlabHost?: string
+  personalGitlabAdmins?: string[]
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
@@ -57,7 +61,7 @@ export function machineOf(config: DeploymentConfig, profile?: ProfileFacts): Mac
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
   const { promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir: stateDirectory(config, profile), promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  return { stateDir: stateDirectory(config, profile), ...config.personalGitlabHost ? { personalGitlabHost: config.personalGitlabHost, personalGitlabAdmins: config.personalGitlabAdmins } : {}, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
 /**

@@ -1,5 +1,6 @@
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
 import { z } from 'zod'
+import { GitLabOperation, type PersonalGitLab } from '../../infra/gitlab-personal.ts'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
@@ -11,8 +12,9 @@ import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
+  readonly personalGitlab?: PersonalGitLab
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
-  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
+  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'> & Partial<Pick<Store, 'triggers'>>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
@@ -22,7 +24,18 @@ export interface ExecutorToolsHost {
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
+  const gitlab = host.personalGitlab
   return [
+    ...(gitlab ? [tool({
+      name: 'orchestrator_gitlab_work',
+      description: 'Read or modify the GitLab project named in the original WeCom request, using only that sender’s personal GitLab authorization. Use this tool for GitLab; never request, relay, or use another person’s credentials. A follow-up cannot change the sender or authorize additional writes. Keep private file contents and diffs out of group replies.',
+      schema: z.object({ project: z.string().min(1), operation: GitLabOperation }).strict(),
+      execute: async ({ project, operation }, signal) => {
+        const current = host.store.tickets.get(ticketId)
+        if (!current || !liveTicket(current)) throw new Error('A live ticket is required')
+        return gitlab.run(host.store.triggers?.get(current.origin.triggerId), project, operation, signal)
+      },
+    })] : []),
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
       true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
     tool({
