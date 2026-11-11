@@ -178,9 +178,16 @@ export class PersonalGitLab {
     return path
   }
 
-  repositorySetup(trigger: Trigger): string {
+  repositorySetup(trigger: Trigger): { origin: string; otherHost?: string } {
     this.actor(trigger)
-    return this.origin
+    const currentHost = new URL(this.origin).host
+    for (const link of trigger.text.matchAll(/https?:\/\/[^\s<>「」。，、！？；]+/gi)) {
+      const requested = URL.parse(link[0])
+      if (requested && requested.host !== currentHost) {
+        return { origin: this.origin, otherHost: requested.host }
+      }
+    }
+    return { origin: this.origin }
   }
 
   async addProject(trigger: Trigger, input: string) {

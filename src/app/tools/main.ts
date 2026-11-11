@@ -199,7 +199,9 @@ function gitlabManagementTool(host: MainToolsHost, gitlab: PersonalGitLab): Tool
         return { replied: true }
       }
       if (action.kind === 'repository_setup') {
-        return reply(`GitLab 地址已配置为 ${gitlab.repositorySetup(trigger)}。请发完整仓库链接，或提供「组名/项目名」，我才能登记该仓库。`)
+        const { origin, otherHost } = gitlab.repositorySetup(trigger)
+        if (otherHost) return reply(`你发的是 ${otherHost}。当前连接的是 ${origin}，地址没有切换。如果要使用另一个 GitLab 实例，请联系部署管理员。`)
+        return reply(`GitLab 地址已配置为 ${origin}。请发完整仓库链接，或提供「组名/项目名」，我才能登记该仓库。`)
       }
       if (action.kind === 'binding_status' || action.kind === 'list_projects') {
         if (trigger.addressed !== 'direct') return reply('请私聊我查看个人 GitLab 绑定状态或仓库。')

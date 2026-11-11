@@ -123,3 +123,16 @@ it('answers private binding and repository requests from the current sender’s 
     expect.objectContaining({ headers: { 'PRIVATE-TOKEN': 'alice-token' } }))
   expect(request).toHaveBeenCalledTimes(3)
 })
+
+it('distinguishes the configured GitLab instance from a different URL in a WeCom setup request', () => {
+  const gitlab = new PersonalGitLab('gitlab.example.com', [], undefined, () => true)
+  const message: Trigger = {
+    id: 'setup', source: 'wecom', human: true, actor: { source: 'wecom', id: 'alice' },
+    addressed: 'direct', threads: [], at: new Date().toISOString(), meta: {},
+    text: '配置这个 https://gitlab.example.com',
+  }
+  expect(gitlab.repositorySetup(message)).toEqual({ origin: 'https://gitlab.example.com' })
+  expect(gitlab.repositorySetup({ ...message, text: '配置这个http://other.example.com/。' })).toEqual({
+    origin: 'https://gitlab.example.com', otherHost: 'other.example.com',
+  })
+})
