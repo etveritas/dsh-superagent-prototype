@@ -378,3 +378,18 @@ commits and opening merge requests. GitLab checks that account's actual
 permissions. The configured mode disables the legacy GitLab source and
 restricts managed sessions to their registered tools, including disabling shell,
 local file tools and external subagents on the same profile.
+
+To enable isolated ticket execution, set `personalGitlabWorkerImage` to a
+trusted local Docker image on the non-root Linux host running Super-agent.
+The image needs `/bin/sh`, the project's build tools and, for delegated
+operations, working `codex` and `hermes` executables on its PATH with their
+own model access. Set `personalGitlabWorkerModelEnv` to the name of the
+deployment's dedicated model credential variable if the agents require one.
+Only agent commands receive that variable. Keep model access separate from
+GitLab authorization.
+Commands run with an ephemeral home and share only their ticket's workspace.
+The host's GitLab credentials, DSH history, and Docker socket are outside the
+container. The GitLab broker can place an authorized project archive in that
+workspace. Use the existing GitLab tool to commit the resulting file changes
+and open an MR with the originator's permissions. This uses an archive,
+without Git history or submodule checkout.

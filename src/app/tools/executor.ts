@@ -1,7 +1,11 @@
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
+import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { RunnerOperation, type PersonalGitLabRunner } from '../../infra/gitlab-runner.ts'
 import { z } from 'zod'
 import { GitLabOperation, type PersonalGitLab } from '../../infra/gitlab-personal.ts'
-import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
+import { key, liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
@@ -13,6 +17,7 @@ import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
   readonly personalGitlab?: PersonalGitLab
+  readonly isolatedGitlab?: { runner: PersonalGitLabRunner; root: string }
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'> & Partial<Pick<Store, 'triggers'>>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
@@ -25,7 +30,29 @@ export interface ExecutorToolsHost {
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
   const gitlab = host.personalGitlab
+  const isolated = host.isolatedGitlab
   return [
+    ...(isolated && gitlab ? [tool({
+      name: 'orchestrator_gitlab_execute',
+      description: 'Run a shell command or ask Codex or Hermes to work inside this ticket’s isolated workspace. Calls share the workspace. GitLab access requires orchestrator_gitlab_work; the container has no GitLab credentials. Use archive to fetch the project snapshot for the original requester, then unpack it from inside the workspace. Wait for the tool result before publishing edits.',
+      schema: z.discriminatedUnion('kind', [
+        ...RunnerOperation.options,
+        z.object({ kind: z.literal('archive'), project: z.string().min(1), ref: z.string().min(1).max(250) }).strict(),
+      ]),
+      execute: async (operation, signal) => {
+        const current = host.store.tickets.get(ticketId)
+        if (!current || !liveTicket(current)) throw new Error('A live ticket is required')
+        const directory = join(isolated.root, key('isolated-work', ticketId))
+        await mkdir(directory, { recursive: true, mode: 0o700 })
+        if (await realpath(directory) !== directory) throw new Error('The isolated workspace must not be a symbolic link')
+        if (operation.kind !== 'archive') return isolated.runner.run(directory, operation, signal)
+        const origin = host.store.triggers?.get(current.origin.triggerId)
+        const archive = await gitlab.archive(origin, operation.project, operation.ref, signal)
+        const name = 'gitlab-' + randomUUID() + '.tar.gz'
+        await writeFile(join(directory, name), archive, { mode: 0o600, flag: 'wx', signal })
+        return { archive: name }
+      },
+    })] : []),
     ...(gitlab ? [tool({
       name: 'orchestrator_gitlab_work',
       description: 'Read or modify the GitLab project named in the original WeCom request, using only that sender’s personal GitLab authorization. Use this tool for GitLab; never request, relay, or use another person’s credentials. A follow-up cannot change the sender or authorize additional writes. Keep private file contents and diffs out of group replies.',

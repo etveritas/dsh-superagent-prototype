@@ -157,14 +157,37 @@ export class PersonalGitLab {
     })
   }
 
-  async run(origin: Trigger | undefined, input: string, operation: z.infer<typeof GitLabOperation>, signal?: AbortSignal) {
+  private authorize(origin: Trigger | undefined, input: string) {
     const identity = this.identity(this.actor(origin))
     const path = this.project(input).toLowerCase()
     const id = this.state.projects[path]
     if (!id || !origin || !containsProject(origin.text, path, this.origin)) {
       throw new Error('The initial request must name a registered GitLab project')
     }
-    const base = '/projects/' + id
+    return { identity, base: '/projects/' + id }
+  }
+
+  async archive(origin: Trigger | undefined, project: string, sha: string, signal: AbortSignal) {
+    const { identity, base } = this.authorize(origin, project)
+    const response = await this.response(identity, base + '/repository/archive.tar.gz?sha=' + encodeURIComponent(sha), undefined, signal)
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('GitLab returned an empty archive')
+    const chunks: Uint8Array[] = []
+    let size = 0
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        size += value.length
+        if (size > 64 * 1024 * 1024) throw new Error('GitLab archive exceeds 64 MiB')
+        chunks.push(value)
+      }
+    } finally { await reader.cancel() }
+    return Buffer.concat(chunks, size)
+  }
+
+  async run(origin: Trigger | undefined, input: string, operation: z.infer<typeof GitLabOperation>, signal?: AbortSignal) {
+    const { identity, base } = this.authorize(origin, input)
     switch (operation.kind) {
       case 'project': return this.api(identity, base, undefined, signal)
       case 'issue': return this.api(identity, `${base}/issues/${operation.iid}`, undefined, signal)
@@ -184,6 +207,10 @@ export class PersonalGitLab {
   }
 
   private async api(identity: GitLabIdentity, path: string, body?: object, signal?: AbortSignal): Promise<unknown> {
+    return (await this.response(identity, path, body, signal)).json()
+  }
+
+  private async response(identity: GitLabIdentity, path: string, body?: object, signal?: AbortSignal): Promise<Response> {
     const headers: Record<string, string> = identity.bearer
       ? { Authorization: `Bearer ${identity.token}` } : { 'PRIVATE-TOKEN': identity.token }
     if (body) headers['Content-Type'] = 'application/json'
@@ -195,6 +222,6 @@ export class PersonalGitLab {
         ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) })
     } catch { throw new Error('Could not reach the configured GitLab instance') }
     if (!response.ok) throw new Error(`GitLab request failed (HTTP ${response.status})`)
-    return response.json()
+    return response
   }
 }

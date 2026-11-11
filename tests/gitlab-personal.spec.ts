@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import { PersonalGitLabRunner, type RunnerProcess } from '../src/infra/gitlab-runner.ts'
 import { executorTools, type ExecutorToolsHost } from '../src/app/tools/executor.ts'
 import type { Ticket, Trigger } from '../src/core/model.ts'
 import { PersonalGitLab, verifyGitLabIdentity } from '../src/infra/gitlab-personal.ts'
@@ -61,5 +62,40 @@ it('keeps project administration separate from member identity and authorizes th
     { project: 'acme/example', operation: { kind: 'project' } }, new AbortController().signal)
   expect(request).toHaveBeenLastCalledWith('https://gitlab.example.com/api/v4/projects/9',
     expect.objectContaining({ headers: expect.objectContaining({ 'PRIVATE-TOKEN': 'alice-token' }) }))
+  request.mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])))
+  const signal = new AbortController().signal
+  expect(await gitlab.archive(origin, 'acme/example', 'main', signal)).toEqual(Buffer.from([1, 2, 3]))
+  expect(request).toHaveBeenLastCalledWith('https://gitlab.example.com/api/v4/projects/9/repository/archive.tar.gz?sha=main',
+    expect.objectContaining({ headers: expect.objectContaining({ 'PRIVATE-TOKEN': 'alice-token' }) }))
+  await expect(gitlab.archive(followup, 'acme/other', 'main', signal)).rejects.toThrow()
   await expect(gitlab.run(origin, 'acme/other', { kind: 'project' })).rejects.toThrow()
+})
+
+it('mounts only the ticket workspace in the isolated runner and uses an image-local agent', async () => {
+  const spawn = vi.fn<RunnerProcess>().mockResolvedValue({ stdout: 'done', stderr: '' })
+  const runner = new PersonalGitLabRunner('example/worker:test', spawn)
+  await runner.run('/tickets/example', { kind: 'codex', prompt: 'inspect the code' })
+  const [binary, args, options] = spawn.mock.calls[0]!
+  expect(binary).toBe('/usr/bin/docker')
+  expect(args).toContain('type=bind,source=/tickets/example,target=/workspace,bind-recursive=disabled')
+  expect(args).toContain('no-new-privileges')
+  expect(args.slice(-9)).toEqual(['--entrypoint', 'codex', 'example/worker:test', 'exec', '--sandbox', 'danger-full-access', '--skip-git-repo-check', '--', 'inspect the code'])
+  expect(options.env).toEqual({ PATH: '/usr/bin:/bin' })
+  await expect(runner.run('/tickets/invalid,target=/root', { kind: 'shell', command: 'true' })).rejects.toThrow()
+  expect(spawn).toHaveBeenCalledOnce()
+})
+
+it('forwards the configured model credential only to delegated agents', async () => {
+  const spawn = vi.fn<RunnerProcess>().mockResolvedValue({ stdout: '', stderr: '' })
+  vi.stubEnv('EXAMPLE_MODEL_KEY', 'example-model-credential')
+  vi.stubEnv('GITLAB_TOKEN', 'example-gitlab-credential')
+  try {
+    const runner = new PersonalGitLabRunner('example/worker:test', spawn, 'EXAMPLE_MODEL_KEY')
+    await runner.run('/tickets/example', { kind: 'hermes', prompt: 'inspect the code' })
+    await runner.run('/tickets/example', { kind: 'shell', command: 'true' })
+    expect(spawn.mock.calls[0]?.[1]).toContain('EXAMPLE_MODEL_KEY')
+    expect(spawn.mock.calls[0]?.[2].env).toEqual({ PATH: '/usr/bin:/bin', EXAMPLE_MODEL_KEY: 'example-model-credential' })
+    expect(spawn.mock.calls[1]?.[1]).not.toContain('EXAMPLE_MODEL_KEY')
+    expect(spawn.mock.calls[1]?.[2].env).toEqual({ PATH: '/usr/bin:/bin' })
+  } finally { vi.unstubAllEnvs() }
 })

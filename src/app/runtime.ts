@@ -17,6 +17,7 @@ import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
+import { PersonalGitLabRunner } from '../infra/gitlab-runner.ts'
 import { PersonalGitLab } from '../infra/gitlab-personal.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
@@ -149,6 +150,8 @@ export class Runtime extends Service implements SourceHost {
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const personalGitlab = machine.personalGitlabHost ? new PersonalGitLab(machine.personalGitlabHost, machine.personalGitlabAdmins ?? [],
         join(machine.stateDir, 'gitlab-personal.json'), id => !!allowedSender(store.settings(), { source: 'wecom', id })) : undefined
+      const gitlabRunner = personalGitlab && machine.personalGitlabWorkerImage
+        ? new PersonalGitLabRunner(machine.personalGitlabWorkerImage, undefined, machine.personalGitlabWorkerModelEnv) : undefined
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
         lifetime: this.lifetime, personalGitlab: !!personalGitlab,
         closing: () => this.closing(), environment,
@@ -196,6 +199,7 @@ export class Runtime extends Service implements SourceHost {
         receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         ...(personalGitlab ? { personalGitlab } : {}),
+        ...(gitlabRunner ? { isolatedGitlab: { runner: gitlabRunner, root: join(machine.stateDir, 'isolated-work') } } : {}),
         sendGitlabNotice: message => outbox.send(message),
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
