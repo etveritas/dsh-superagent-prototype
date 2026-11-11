@@ -178,6 +178,11 @@ export class PersonalGitLab {
     return path
   }
 
+  repositorySetup(trigger: Trigger): string {
+    this.actor(trigger)
+    return this.origin
+  }
+
   async addProject(trigger: Trigger, input: string) {
     const actor = this.actor(trigger)
     if (!this.admins.includes(actor)) throw new Error('Only a configured WeCom administrator can add GitLab projects')

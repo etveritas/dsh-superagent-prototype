@@ -175,7 +175,7 @@ function gitlabNoticeParts(text: string): string[] {
 function gitlabManagementTool(host: MainToolsHost, gitlab: PersonalGitLab): Tool {
   return tool({
     name: 'orchestrator_gitlab_manage',
-    description: 'Answer the current WeCom message about personal GitLab. Use binding_status for questions about whether/how GitLab can be bound, and list_projects for listing repositories. Also handles explicit binding and adding a project. Use this before routing to a ticket. Credentials must come from the same private message. Never quote or relay credentials. The tool sends the answer itself.',
+    description: 'Answer the current WeCom message about personal GitLab. Use binding_status for questions about whether/how GitLab can be bound, and list_projects for listing repositories. Use repository_setup for repository configuration requests missing a full project path, including host-only links. Use add_project when the request names the exact project. Also handles explicit binding. Use this before routing to a ticket. Credentials must come from the same private message. Never quote or relay credentials. The tool sends the answer itself.',
     schema: z.object({
       trigger_id: z.string().min(1),
       action: z.discriminatedUnion('kind', [
@@ -183,6 +183,7 @@ function gitlabManagementTool(host: MainToolsHost, gitlab: PersonalGitLab): Tool
         z.object({ kind: z.literal('list_projects'), page: z.number().int().min(1).max(10000).default(1) }).strict(),
         z.object({ kind: z.literal('bind_token'), token: z.string().min(1) }).strict(),
         z.object({ kind: z.literal('bind_password'), username: z.string().min(1), password: z.string().min(1) }).strict(),
+        z.object({ kind: z.literal('repository_setup') }).strict(),
         z.object({ kind: z.literal('add_project'), project: z.string().min(1) }).strict(),
       ]),
     }).strict(),
@@ -196,6 +197,9 @@ function gitlabManagementTool(host: MainToolsHost, gitlab: PersonalGitLab): Tool
           host.sendGitlabNotice?.({ id, channel, kind: 'notice', text: part })
         })
         return { replied: true }
+      }
+      if (action.kind === 'repository_setup') {
+        return reply(`GitLab 地址已配置为 ${gitlab.repositorySetup(trigger)}。请发完整仓库链接，或提供「组名/项目名」，我才能登记该仓库。`)
       }
       if (action.kind === 'binding_status' || action.kind === 'list_projects') {
         if (trigger.addressed !== 'direct') return reply('请私聊我查看个人 GitLab 绑定状态或仓库。')
