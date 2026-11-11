@@ -93,8 +93,41 @@ export class PersonalGitLab {
     return trigger.actor.id
   }
 
+  private account(actor: string): GitLabIdentity | undefined {
+    return Object.hasOwn(this.state.accounts, actor) ? this.state.accounts[actor] : undefined
+  }
+
+  private privateActor(trigger: Trigger): string {
+    const actor = this.actor(trigger)
+    if (trigger.addressed !== 'direct') throw new Error('Use a private WeCom conversation for personal GitLab queries')
+    return actor
+  }
+
+  bindingStatus(trigger: Trigger) {
+    const identity = this.account(this.privateActor(trigger))
+    if (!identity) return { status: 'unbound' as const }
+    const expired = identity.expiresAt !== undefined && identity.expiresAt <= Date.now()
+    return { status: expired ? 'expired' as const : 'bound' as const, username: identity.username }
+  }
+
+  async listProjects(trigger: Trigger, page: number, signal?: AbortSignal) {
+    const identity = this.identity(this.privateActor(trigger))
+    const perPage = 20
+    const query = async (scope: 'owned' | 'membership') => {
+      const response = await this.response(identity, `/projects?${scope}=true&per_page=${perPage}&page=${page}&order_by=id&sort=asc`, undefined, signal)
+      const projects = z.array(Project).parse(await response.json())
+      const next = response.headers.get('x-next-page')
+      return { projects: projects.map(project => ({
+        path: project.path_with_namespace,
+        registered: this.state.projects[project.path_with_namespace.toLowerCase()] === project.id,
+      })), hasMore: next === null ? projects.length === perPage : next !== '' }
+    }
+    const [owned, membership] = await Promise.all([query('owned'), query('membership')])
+    return { owned: owned.projects, membership: membership.projects, hasMore: owned.hasMore || membership.hasMore }
+  }
+
   private identity(actor: string): GitLabIdentity {
-    const identity = Object.hasOwn(this.state.accounts, actor) ? this.state.accounts[actor] : undefined
+    const identity = this.account(actor)
     if (!identity || (identity.expiresAt !== undefined && identity.expiresAt <= Date.now())) {
       throw new Error('The originating WeCom user must bind or renew their personal GitLab account in a direct message')
     }

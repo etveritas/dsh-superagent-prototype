@@ -155,27 +155,74 @@ function routeTool(host: MainToolsHost): Tool {
     },
   })
 }
+function gitlabNoticeParts(text: string): string[] {
+  if (wordCount(text) <= IM_WORDS) return [text]
+  const parts: string[] = []
+  let start = 0
+  let count = 0
+  for (const segment of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(text)) {
+    if (!segment.isWordLike) continue
+    if (count === IM_WORDS) {
+      parts.push(text.slice(start, segment.index))
+      start = segment.index
+      count = 0
+    }
+    count++
+  }
+  parts.push(text.slice(start))
+  return parts
+}
 function gitlabManagementTool(host: MainToolsHost, gitlab: PersonalGitLab): Tool {
   return tool({
     name: 'orchestrator_gitlab_manage',
-    description: 'Handle a fresh explicit natural-language WeCom request to bind the sender’s own GitLab account or add a project. Use this before routing such a request to a ticket. Credentials must come from the same private message. Never quote or relay credentials. The tool sends a confirmation on success. For binding without credentials, ask the sender to supply them privately.',
+    description: 'Answer the current WeCom message about personal GitLab. Use binding_status for questions about whether/how GitLab can be bound, and list_projects for listing repositories. Also handles explicit binding and adding a project. Use this before routing to a ticket. Credentials must come from the same private message. Never quote or relay credentials. The tool sends the answer itself.',
     schema: z.object({
       trigger_id: z.string().min(1),
       action: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('binding_status') }).strict(),
+        z.object({ kind: z.literal('list_projects'), page: z.number().int().min(1).max(10000).default(1) }).strict(),
         z.object({ kind: z.literal('bind_token'), token: z.string().min(1) }).strict(),
         z.object({ kind: z.literal('bind_password'), username: z.string().min(1), password: z.string().min(1) }).strict(),
         z.object({ kind: z.literal('add_project'), project: z.string().min(1) }).strict(),
       ]),
     }).strict(),
-    execute: async ({ trigger_id, action }) => {
+    execute: async ({ trigger_id, action }, signal) => {
       const trigger = host.store.triggers.get(trigger_id)
       if (!trigger?.channel || host.store.triggers.disposition(trigger_id)?.filtered) throw new Error('A current WeCom message is required')
+      const channel = trigger.channel
+      const reply = (text: string) => {
+        gitlabNoticeParts(text).forEach((part, index) => {
+          const id = index === 0 ? key('gitlab-management', trigger.id) : key('gitlab-management', trigger.id, String(index))
+          host.sendGitlabNotice?.({ id, channel, kind: 'notice', text: part })
+        })
+        return { replied: true }
+      }
+      if (action.kind === 'binding_status' || action.kind === 'list_projects') {
+        if (trigger.addressed !== 'direct') return reply('请私聊我查看个人 GitLab 绑定状态或仓库。')
+        const status = gitlab.bindingStatus(trigger)
+        if (status.status !== 'bound') {
+          const prefix = status.status === 'expired' ? '你的 GitLab 授权已过期。' : '可以在这里绑定个人 GitLab 账号。'
+          return reply(prefix + '请在私聊中发送 GitLab 访问令牌。')
+        }
+        if (action.kind === 'binding_status') return reply(`当前已绑定个人 GitLab 账号 ${status.username}。`)
+        try {
+          const projects = await gitlab.listProjects(trigger, action.page, signal)
+          const names = (entries: typeof projects.owned) => entries.map(project =>
+            project.path + (project.registered ? '（已登记）' : '')).join('、') || '本页无'
+          return reply([`GitLab 仓库（第 ${action.page} 页）`, `个人名下：${names(projects.owned)}`,
+            `有成员权限：${names(projects.membership)}`, ...(projects.hasMore ? ['还有更多，回复「下一页」继续查看。'] : [])].join('\n'))
+        } catch (error) {
+          if (signal.aborted) throw error
+          const code = error instanceof Error ? /^GitLab request failed \(HTTP (\d+)\)$/.exec(error.message)?.[1] : undefined
+          return reply(code === '401' ? 'GitLab 拒绝了当前凭证，请私聊重新绑定后再查询。'
+            : `暂时无法查询 GitLab 仓库${code ? `（HTTP ${code}）` : ''}，请稍后重试。`)
+        }
+      }
       const result = action.kind === 'add_project' ? await gitlab.addProject(trigger, action.project)
         : await gitlab.bind(trigger, action.kind === 'bind_token'
           ? { token: action.token } : { username: action.username, password: action.password })
-      host.sendGitlabNotice?.({ id: key('gitlab-management', trigger.id), channel: trigger.channel, kind: 'notice',
-        text: 'project' in result ? `已添加 GitLab 项目 ${result.project}。` : `已绑定个人 GitLab 账号 ${result.username}。` })
-      return result
+      return reply('project' in result ? `已添加 GitLab 项目 ${result.project}。`
+        : `已绑定个人 GitLab 账号 ${result.username}。你现在可以问我有哪些 GitLab 仓库。`)
     },
   })
 }

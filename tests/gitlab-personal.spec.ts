@@ -99,3 +99,27 @@ it('forwards the configured model credential only to delegated agents', async ()
     expect(spawn.mock.calls[1]?.[2].env).toEqual({ PATH: '/usr/bin:/bin' })
   } finally { vi.unstubAllEnvs() }
 })
+
+it('answers private binding and repository requests from the current sender’s account', async () => {
+  const request = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ id: 7, username: 'alice' }))
+    .mockResolvedValueOnce(Response.json([], { headers: { 'x-next-page': '' } }))
+    .mockResolvedValueOnce(Response.json([{ id: 8, path_with_namespace: 'team/example' }], { headers: { 'x-next-page': '2' } }))
+  const gitlab = new PersonalGitLab('gitlab.example.com', [], undefined, () => true, request)
+  const message: Trigger = {
+    id: 'binding', source: 'wecom', human: true, actor: { source: 'wecom', id: 'alice' },
+    addressed: 'direct', threads: [], at: new Date().toISOString(), text: '绑定 GitLab alice-token', meta: {},
+  }
+  expect(gitlab.bindingStatus(message)).toEqual({ status: 'unbound' })
+  await gitlab.bind(message, { token: 'alice-token' })
+  const query = { ...message, id: 'query', text: '看看我账户下有哪些代码仓' }
+  expect(gitlab.bindingStatus(query)).toEqual({ status: 'bound', username: 'alice' })
+  await expect(gitlab.listProjects({ ...query, addressed: 'mention' }, 1)).rejects.toThrow('private')
+  await expect(gitlab.listProjects({ ...query, actor: { source: 'wecom', id: 'bob' } }, 1)).rejects.toThrow('bind')
+  await expect(gitlab.listProjects(query, 1)).resolves.toEqual({
+    owned: [], membership: [{ path: 'team/example', registered: false }], hasMore: true,
+  })
+  expect(request).toHaveBeenLastCalledWith('https://gitlab.example.com/api/v4/projects?membership=true&per_page=20&page=1&order_by=id&sort=asc',
+    expect.objectContaining({ headers: { 'PRIVATE-TOKEN': 'alice-token' } }))
+  expect(request).toHaveBeenCalledTimes(3)
+})
